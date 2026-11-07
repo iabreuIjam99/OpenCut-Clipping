@@ -1,9 +1,70 @@
 import { ArrowDownIcon, ArrowLeftIcon, ArrowRightIcon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 import * as React from "react"
-import { type DayButton, DayPicker, getDefaultClassNames, type Locale } from "react-day-picker"
+import {
+  type ChevronProps,
+  type DayButton,
+  DayPicker,
+  getDefaultClassNames,
+  type Locale,
+  type RootProps,
+  useDayPicker,
+  type WeekNumberProps,
+} from "react-day-picker"
 import { Button, buttonVariants } from "#/components/ui/button.tsx"
 import { cn } from "#/lib/utils.ts"
+
+function CalendarRoot({ className, rootRef, ...props }: RootProps) {
+  return <div data-slot="calendar" ref={rootRef} className={cn(className)} {...props} />
+}
+
+function CalendarChevron({ className, orientation, ...props }: ChevronProps) {
+  if (orientation === "left") {
+    return (
+      <HugeiconsIcon
+        icon={ArrowLeftIcon}
+        strokeWidth={2}
+        className={cn("size-4", className)}
+        {...props}
+      />
+    )
+  }
+
+  if (orientation === "right") {
+    return (
+      <HugeiconsIcon
+        icon={ArrowRightIcon}
+        strokeWidth={2}
+        className={cn("size-4", className)}
+        {...props}
+      />
+    )
+  }
+
+  return (
+    <HugeiconsIcon
+      icon={ArrowDownIcon}
+      strokeWidth={2}
+      className={cn("size-4", className)}
+      {...props}
+    />
+  )
+}
+
+function CalendarWeekNumber({ children, ...props }: WeekNumberProps) {
+  return (
+    <td {...props}>
+      <div className="flex size-(--cell-size) items-center justify-center text-center">
+        {children}
+      </div>
+    </td>
+  )
+}
+
+function CalendarDayButtonSlot(props: React.ComponentProps<typeof DayButton>) {
+  const { dayPickerProps } = useDayPicker()
+  return <CalendarDayButton locale={dayPickerProps.locale} {...props} />
+}
 
 function Calendar({
   className,
@@ -111,51 +172,10 @@ function Calendar({
         ...classNames,
       }}
       components={{
-        Root: ({ className, rootRef, ...props }) => {
-          return <div data-slot="calendar" ref={rootRef} className={cn(className)} {...props} />
-        },
-        Chevron: ({ className, orientation, ...props }) => {
-          if (orientation === "left") {
-            return (
-              <HugeiconsIcon
-                icon={ArrowLeftIcon}
-                strokeWidth={2}
-                className={cn("size-4", className)}
-                {...props}
-              />
-            )
-          }
-
-          if (orientation === "right") {
-            return (
-              <HugeiconsIcon
-                icon={ArrowRightIcon}
-                strokeWidth={2}
-                className={cn("size-4", className)}
-                {...props}
-              />
-            )
-          }
-
-          return (
-            <HugeiconsIcon
-              icon={ArrowDownIcon}
-              strokeWidth={2}
-              className={cn("size-4", className)}
-              {...props}
-            />
-          )
-        },
-        DayButton: ({ ...props }) => <CalendarDayButton locale={locale} {...props} />,
-        WeekNumber: ({ children, ...props }) => {
-          return (
-            <td {...props}>
-              <div className="flex size-(--cell-size) items-center justify-center text-center">
-                {children}
-              </div>
-            </td>
-          )
-        },
+        Root: CalendarRoot,
+        Chevron: CalendarChevron,
+        DayButton: CalendarDayButtonSlot,
+        WeekNumber: CalendarWeekNumber,
         ...components,
       }}
       {...props}
