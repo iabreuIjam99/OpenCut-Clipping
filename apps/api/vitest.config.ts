@@ -4,7 +4,7 @@ import { defineConfig } from "vitest/config"
 export default defineConfig({
   test: {
     environment: "node",
-    // Sin modulos de feature todavia: src solo contiene el bootstrap excluido (src/index.ts).
+    // PROVISIONAL: no measurable api module exists until Task 13 (config/env.ts). Task 13 MUST remove this flag and make the gate real.
     passWithNoTests: true,
     coverage: {
       provider: "v8",
