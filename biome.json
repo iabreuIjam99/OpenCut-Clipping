@@ -39,21 +39,30 @@
   "linter": {
     "enabled": true,
     "rules": {
-      "preset": "none",
+      "preset": "recommended",
       "correctness": {
         "noUnusedVariables": "error"
       },
       "suspicious": {
         "noExplicitAny": "error",
-        "noConsole": "warn"
+        "noConsole": "warn",
+        "noArrayIndexKey": "off"
       },
       "style": {
         "useConst": "error"
+      },
+      "a11y": {
+        "preset": "none"
       }
     }
   },
   "assist": {
-    "enabled": false
+    "enabled": true,
+    "actions": {
+      "source": {
+        "organizeImports": "on"
+      }
+    }
   },
   "overrides": [
     {
