@@ -18,6 +18,12 @@ tasks:
     outputs:
       - "dist"
 
+  test:
+    command: "bun run test"
+    inputs:
+      - "src/**/*"
+      - "vitest.config.ts"
+
   lint:
     command: "bun run lint"
     inputs:
