@@ -5,13 +5,18 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "build": "wrangler deploy --dry-run"
+    "build": "wrangler deploy --dry-run",
+    "lint": "biome check --formatter-enabled=false .",
+    "typecheck": "tsc --noEmit",
+    "format": "biome format --write ."
   },
   "dependencies": {
     "elysia": "1.4.30"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.6.4",
     "@cloudflare/workers-types": "5.20261031.1",
+    "typescript": "6.0.3",
     "wrangler": "4.156.0"
   }
 }

@@ -26,6 +26,20 @@ tasks:
       - 'src/**/*'
       - 'tsconfig.json'
 
+  lint:
+    command: 'bun run lint'
+    inputs:
+      - 'src/**/*'
+      - 'package.json'
+      - '/biome.json'
+
+  typecheck:
+    command: 'bun run typecheck'
+    inputs:
+      - 'src/**/*'
+      - 'tsconfig.json'
+      - 'package.json'
+
   deploy:
     command: 'bun run deploy'
     deps:
