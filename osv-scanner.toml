@@ -1,0 +1,17 @@
+# Deuda de dependencias conocida y con fecha de revisión.
+# OSV-Scanner falla si un ignore caduca, así que esto no oculta la deuda: la agenda.
+
+[[IgnoredVulns]]
+id = "GHSA-g3hv-75wg-m249"   # minimatch (DoS) vía shadcn -> ts-morph -> @ts-morph/common
+ignoreUntil = 2027-01-06
+reason = "Dev-only codegen chain (shadcn CLI); does not ship to the Worker bundle."
+
+[[IgnoredVulns]]
+id = "GHSA-gcqx-w48m-w2h4"   # deepmerge (prototype poisoning) vía shadcn -> @shadcn/registry
+ignoreUntil = 2027-01-06
+reason = "Dev-only codegen chain (shadcn CLI); does not ship to the Worker bundle."
+
+[[IgnoredVulns]]
+id = "GHSA-rj75-hqrm-r3gf"   # postcss-selector-parser (CPU exhaustion) vía shadcn/@tailwindcss/typography
+ignoreUntil = 2027-01-06
+reason = "Build-time CSS tooling only; no untrusted selector input at runtime."
