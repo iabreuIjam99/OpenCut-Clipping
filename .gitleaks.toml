@@ -1,0 +1,21 @@
+# gitleaks configuration for MonetizaClip.
+#
+# The stock rule set is kept as-is (`useDefault`); the only addition is a
+# path allowlist for the planning documents that quote the dummy credential
+# `sk-test-1234567890` while describing how the security workflow itself is
+# tested. Those files are prose: they are never bundled, built or deployed,
+# and they contain no real credentials. Everything else -- `apps/`, `crates/`,
+# root config and any `.env*` file -- is still scanned with the default rules.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Planning documents that intentionally quote the dummy test value"
+paths = [
+  # The committed project plan reproduces the task text verbatim.
+  '''(?:^|/)plan\.md$''',
+  # Untracked working notes (not present in CI checkouts). Ignored here so a
+  # local run sees the same tree the workflow will see.
+  '''^\.superpowers/''',
+]
