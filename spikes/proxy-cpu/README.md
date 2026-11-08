@@ -1,0 +1,97 @@
+# Spike: proxy streaming de 20 MB (CPU) — Task 8
+
+Spike autocontenido para responder una pregunta: **¿puede `apps/api` reenviar una
+subida de audio de 20 MB a Groq sin buffering y con CPU por request dentro del plan Free
+de Cloudflare Workers?** El upstream es un sink local; **no se llama a Groq**.
+
+**Veredicto:** GO para el proxy mínimo (`fetch` puro) y GO para Elysia 1.4.30 con la
+ruta sin `body` en el schema. NO-GO solo para la variante de control `body: t.Any()`,
+que consume el stream y devuelve 500. Detalle, tablas y caveats en [`RESULT.md`](./RESULT.md).
+
+## Quick start
+
+```powershell
+cd spikes/proxy-cpu
+bun install
+bun run typecheck
+bun run bench
+```
+
+`bun run bench` arranca el sink (`127.0.0.1:8798`) y los tres Workers, ejecuta la matriz
+completa (20 requests × 3 reps por configuración) y escribe `results/bench.json` +
+`results/bench.log` (gitignored). Al terminar para todo. No mata procesos ajenos.
+
+Smoke test rápido:
+
+```powershell
+bun run bench -- --quick
+bun run bench -- --only minimal --configs headline-20mb
+```
+
+## Estructura
+
+```
+src/
+  config.ts           UPSTREAM_URL (127.0.0.1:8798/sink)
+  proxy.ts            proxy de streaming puro (request.body → fetch)
+  minimal.ts          Worker mínimo (fetch puro)
+  elysia.ts           Elysia sin body en el schema
+  elysia-schema.ts    control negativo: body: t.Any()
+  burn.ts             /burn?ms=N para calibrar el profiler
+scripts/
+  sink.ts             sink Bun: timestamps por chunk, SHA-256, headers
+  upload.ts           cliente chunked con throttle, hash incremental y abort
+  measure-cpu.ts      cliente CDP + calibración + estadísticas
+  bench.ts            orquestador de la matriz
+  sink-node.cjs       upstream Node para probar la propagación del abort
+wrangler.jsonc              minimal  :8807 / inspector 9240
+wrangler.elysia.jsonc       elysia   :8810 / inspector 9241
+wrangler.elysia-schema.jsonc schema  :8812 / inspector 9242
+```
+
+## Comandos
+
+```powershell
+bun run sink                 # sink local :8798
+bun run dev                  # minimal :8807
+bun run dev:elysia           # elysia :8810
+bun run dev:elysia-schema    # schema :8812
+bun run upload -- --url http://127.0.0.1:8807/proxy --size 20 --chunk 1024 --rate 2 --multipart
+bun run measure -- --inspector 9240 --url http://127.0.0.1:8807/proxy --size 20 --chunk 1024 --multipart --repeat 20
+bun run bench [-- --only minimal] [--configs headline-20mb,throttled-20mb] [--quick]
+```
+
+Los puertos son dedicados porque los dev servers de `apps/web` ocupan `8787`.
+
+## Matriz medida
+
+- 20 MB multipart (1 MB/chunk): CPU y buffering.
+- Escalado 1 / 5 / 20 / 50 MB.
+- Chunks de 64 KB / 1 MB / 4 MB.
+- 20 MB octet-stream.
+- 20 MB a 2 MB/s (~10 s) para probar que no hay buffering.
+- Errores 413 / 500 propagados.
+- Abort del cliente a los 1,5 s.
+
+## Método en una línea
+
+CPU por request vía CDP (`Profiler.start` → subida → `Profiler.stop`), estimada como
+`muestras no-idle × intervalo calibrado`; el ruido se mide con ventanas idle y es 0.
+La suma de `timeDeltas` prescrita en el brief se publica aparte porque sobreestima
+(workerd solo muestrea cuando ejecuta JS). No-buffering se demuestra con timestamps de
+llegada por chunk en el sink + SHA-256 enviado/recibido + throttle a 2 MB/s.
+
+## Caveats
+
+- Medición local (`wrangler dev`/workerd) sobre Ryzen 5 9600X: **no** es hardware de
+  Cloudflare y **no** aplica el límite de 10 ms. El GO es una estimación con margen.
+- El sampler resuelve ~0,586 ms; `p50 = 0` significa “por debajo de una muestra”.
+- Sin concurrencia, sin memoria instrumentada, sin Groq/TLS.
+- `wrangler deploy --temporary` no existe en 4.156.0; no se desplegó nada.
+- El sink Bun no ve el cierre del socket; el abort se verifica con `sink-node.cjs`.
+
+## Requisitos
+
+Bun 1.3.11, Node 24 (host de wrangler), `wrangler` 4.156.0, `elysia` 1.4.30,
+`typescript` 5.9.3, `@cloudflare/workers-types` 5.20261031.1. Versiones exactas en
+`package.json`; lockfile en `bun.lock`.

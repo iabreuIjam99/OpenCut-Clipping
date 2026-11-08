@@ -1,0 +1,12 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "proxy-cpu-minimal",
+  "main": "src/minimal.ts",
+  "compatibility_date": "2025-06-01",
+  "vars": {
+    "UPSTREAM": "http://127.0.0.1:8798/sink"
+  },
+  "observability": {
+    "enabled": false
+  }
+}
