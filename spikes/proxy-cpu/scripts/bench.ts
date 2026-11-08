@@ -14,10 +14,12 @@ import { getActiveRun, getLastRun, resetSink, startSink } from "./sink";
 import {
   calibrate,
   measureBatch,
+  sampleMemoryDuringUpload,
   stats,
   type BatchResult,
   type CalibrationResult,
   type MeasuredRequest,
+  type MemoryProbeResult,
 } from "./measure-cpu";
 import { uploadOnce, type UploadOptions, type UploadResult } from "./upload";
 
@@ -105,6 +107,9 @@ interface ConfigResult {
   wallMs: ReturnType<typeof stats>;
   cpuPerMbUs: number;
   cpuPerChunkUs: number;
+  /** cota superior a partir de p95 muestras × intervalo / tamaño */
+  cpuPerMbUpperUs: number;
+  cpuPerChunkUpperUs: number;
   cpuPerRequestP50Us: number;
   statuses: Record<string, number>;
   perRepCpuUs: ReturnType<typeof stats>[];
@@ -120,7 +125,16 @@ interface ImplResult {
   impl: ImplDef;
   configs: Record<string, ConfigResult>;
   calibration: CalibrationResult | null;
+  /** heap/RSS medidos con una subida dedicada (20 y 50 MB) */
+  memory: MemoryRun[];
   workerLogTail: string[];
+}
+
+interface MemoryRun extends MemoryProbeResult {
+  processRss: {
+    before: ProcessMemory | null;
+    after: ProcessMemory | null;
+  };
 }
 
 function parseSinkRun(upload: UploadResult): Record<string, unknown> | null {
@@ -408,6 +422,60 @@ $sum
   }
 }
 
+interface ProcessMemory {
+  workingSetBytes: number;
+  peakWorkingSetBytes: number;
+  processCount: number;
+}
+
+/**
+ * RSS del árbol de procesos (node → wrangler → workerd), antes y después de una
+ * subida. Incluye runtime + isolate + inspector + dev server, por eso es una
+ * cota superior y no el heap del Worker.
+ */
+function processMemory(rootPid: number): ProcessMemory | null {
+  const script = `
+$root = ${rootPid}
+$procs = Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId
+$ids = New-Object System.Collections.Generic.HashSet[int]
+[void]$ids.Add($root)
+$changed = $true
+while ($changed) {
+  $changed = $false
+  foreach ($p in $procs) {
+    if ($ids.Contains([int]$p.ParentProcessId) -and -not $ids.Contains([int]$p.ProcessId)) {
+      [void]$ids.Add([int]$p.ProcessId)
+      $changed = $true
+    }
+  }
+}
+$ws = 0.0
+$peak = 0.0
+$n = 0
+foreach ($id in $ids) {
+  $proc = Get-Process -Id $id -ErrorAction SilentlyContinue
+  if ($proc) { $ws += $proc.WorkingSet64; $peak += $proc.PeakWorkingSet64; $n++ }
+}
+"$ws|$peak|$n"
+`;
+  try {
+    const result = Bun.spawnSync(
+      ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+      { stdout: "pipe", stderr: "ignore" },
+    );
+    const [ws, peak, count] = result.stdout.toString().trim().split("|");
+    const workingSetBytes = Number(ws);
+    const peakWorkingSetBytes = Number(peak);
+    const processCount = Number(count);
+    if (!Number.isFinite(workingSetBytes) || !Number.isFinite(peakWorkingSetBytes)) {
+      return null;
+    }
+    return { workingSetBytes, peakWorkingSetBytes, processCount };
+  } catch {
+    return null;
+  }
+}
+
 function aggregateTopFrames(requests: MeasuredRequest[]): { name: string; url: string; us: number }[] {
   const map = new Map<string, { name: string; url: string; us: number }>();
   for (const request of requests) {
@@ -461,6 +529,12 @@ function buildConfigResult(
     },
     cpuPerMbUs: config.sizeMb > 0 ? Math.round((meanCpuUs / config.sizeMb) * 1000) / 1000 : 0,
     cpuPerChunkUs: Math.round((meanCpuUs / chunks) * 1000) / 1000,
+    // Cota superior: usa el p95 de muestras (cuantizado) en vez de la media.
+    cpuPerMbUpperUs:
+      config.sizeMb > 0
+        ? Math.round((estimateStats.p95 / config.sizeMb) * 1000) / 1000
+        : 0,
+    cpuPerChunkUpperUs: Math.round((estimateStats.p95 / chunks) * 1000) / 1000,
     cpuPerRequestP50Us: Math.round(estimateStats.p50 * 1000) / 1000,
     statuses,
     perRepCpuUs: batches.map((batch) =>
@@ -523,6 +597,41 @@ async function runConfig(
   return buildConfigResult(config, batches, processCpuUsPerRequest);
 }
 
+/**
+ * Mide heap del isolate + RSS del proceso durante UNA subida dedicada.
+ * La subida se throttlea para poder muestrear el stream (2 MB/s a 20 MB,
+ * 5 MB/s a 50 MB → ~10 s en ambos casos).
+ */
+async function runMemoryProbe(
+  worker: WorkerHandle,
+  sizeMb: number,
+  rateMb: number,
+): Promise<MemoryRun> {
+  const before = processMemory(worker.pid);
+  const probe = await sampleMemoryDuringUpload({
+    inspectorPort: worker.impl.inspector,
+    upload: {
+      url: `http://127.0.0.1:${worker.impl.port}/proxy`,
+      sizeBytes: Math.round(sizeMb * MB),
+      chunkBytes: 1024 * 1024,
+      rateBytesPerSec: Math.round(rateMb * MB),
+      multipart: true,
+    },
+    sampleIntervalMs: 50,
+    settleMs: 500,
+  });
+  const after = processMemory(worker.pid);
+  console.log(
+    `    mem ${sizeMb} MB: heap pico Δ ${probe.peakDeltaBytes ?? "n/a"} B ` +
+      `(${probe.sampleCount} muestras), RSS Δ ${
+        before !== null && after !== null
+          ? after.workingSetBytes - before.workingSetBytes
+          : "n/a"
+      } B`,
+  );
+  return { ...probe, processRss: { before, after } };
+}
+
 /** Corre una subida (o varias) sin perfilado: buffering / errores / abort. */
 async function runRaw(
   config: RunConfig,
@@ -561,6 +670,7 @@ async function main(): Promise<void> {
       ? args[configsIndex + 1]!.split(",").map((value) => value.trim())
       : undefined;
   const quick = args.includes("--quick");
+  const merge = args.includes("--merge");
   const repeat = quick ? 5 : 20;
   const reps = quick ? 1 : 3;
   const idleWindows = quick ? 5 : 20;
@@ -618,6 +728,30 @@ async function main(): Promise<void> {
         {
           id: "scale-5mb",
           sizeMb: 5,
+          chunkKb: 1024,
+          rateMb: 0,
+          multipart: true,
+          status: 200,
+          repeat,
+          reps,
+          idleWindows,
+        },
+        {
+          // Tamaño real de un chunk de 30 min (~5,4 MB).
+          id: "scale-5.4mb",
+          sizeMb: 5.4,
+          chunkKb: 1024,
+          rateMb: 0,
+          multipart: true,
+          status: 200,
+          repeat,
+          reps,
+          idleWindows,
+        },
+        {
+          // Tamaño real de 1 h (~11,9 MB).
+          id: "scale-11.9mb",
+          sizeMb: 11.9,
           chunkKb: 1024,
           rateMb: 0,
           multipart: true,
@@ -797,10 +931,24 @@ async function main(): Promise<void> {
         );
       }
 
+      // Memoria: una subida dedicada por tamaño, con el stream muestreado.
+      // Se omite en el control negativo (siempre 500/0 B) y en --quick.
+      const memory: MemoryRun[] = [];
+      if (!quick && impl.id !== "elysia-schema") {
+        for (const sizeMb of [20, 50]) {
+          const rateMb = sizeMb >= 50 ? 5 : 2;
+          console.log(
+            `  [mem-${sizeMb}mb] heap/RSS durante una subida a ${rateMb} MB/s`,
+          );
+          memory.push(await runMemoryProbe(worker, sizeMb, rateMb));
+        }
+      }
+
       results[impl.id] = {
         impl,
         configs,
         calibration,
+        memory,
         workerLogTail: worker.logTail.slice(-30),
       };
     } finally {
@@ -808,20 +956,44 @@ async function main(): Promise<void> {
     }
   }
 
-  const output = {
-    meta: {
-      startedAt: new Date().toISOString(),
-      host: process.env["COMPUTERNAME"] ?? "unknown",
-      platform: process.platform,
-      bun: Bun.version,
-      repeat,
-      reps,
-      idleWindows,
-      sinkPort: SINK_PORT,
-      note: "CPU medida por CDP en workerd local; wrangler dev NO aplica el límite de 10 ms",
-    },
+  const meta = {
+    startedAt: new Date().toISOString(),
+    host: process.env["COMPUTERNAME"] ?? "unknown",
+    platform: process.platform,
+    bun: Bun.version,
+    repeat,
+    reps,
+    idleWindows,
+    sinkPort: SINK_PORT,
+    note: "CPU medida por CDP en workerd local; wrangler dev NO aplica el límite de 10 ms",
+  };
+
+  let output: { meta: typeof meta & { mergedAt?: string }; impls: Record<string, ImplResult> } = {
+    meta,
     impls: results,
   };
+
+  if (merge && (await Bun.file("results/bench.json").exists())) {
+    const existing = (await Bun.file("results/bench.json").json()) as typeof output;
+    output = {
+      meta: { ...existing.meta, ...meta, mergedAt: new Date().toISOString() },
+      impls: { ...existing.impls },
+    };
+    for (const [id, result] of Object.entries(results)) {
+      const previous = output.impls[id];
+      output.impls[id] = {
+        ...previous,
+        ...result,
+        configs: { ...(previous?.configs ?? {}), ...result.configs },
+        // Conserva la calibración original de la ronda 0; los configs nuevos
+        // guardan sus valores ya calculados con la calibración de esta corrida.
+        calibration: previous?.calibration ?? result.calibration,
+        memory: result.memory ?? previous?.memory ?? [],
+        workerLogTail: result.workerLogTail,
+      };
+    }
+    console.log("[bench] resultados fusionados en results/bench.json (--merge)");
+  }
 
   await Bun.write("results/bench.json", JSON.stringify(output, null, 2));
   console.log("\n[bench] resultados en results/bench.json");

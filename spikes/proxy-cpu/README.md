@@ -28,6 +28,13 @@ bun run bench -- --quick
 bun run bench -- --only minimal --configs headline-20mb
 ```
 
+Añadir solo los tamaños de producción / refrescar la memoria sin repetir la matriz:
+
+```powershell
+bun run bench -- --only minimal --configs scale-5.4mb,scale-11.9mb --merge
+bun run bench -- --only elysia  --configs scale-5.4mb,scale-11.9mb --merge
+```
+
 ## Estructura
 
 ```
@@ -66,27 +73,34 @@ Los puertos son dedicados porque los dev servers de `apps/web` ocupan `8787`.
 ## Matriz medida
 
 - 20 MB multipart (1 MB/chunk): CPU y buffering.
-- Escalado 1 / 5 / 20 / 50 MB.
+- Escalado 1 / 5 / 5,4 / 11,9 / 20 / 50 MB (5,4 MB = chunk de 30 min; 11,9 MB = 1 h).
 - Chunks de 64 KB / 1 MB / 4 MB.
 - 20 MB octet-stream.
 - 20 MB a 2 MB/s (~10 s) para probar que no hay buffering.
+- Memoria del isolate: `Runtime.getHeapUsage` cada 50 ms durante 20 MB @ 2 MB/s y
+  50 MB @ 5 MB/s (+ RSS del árbol de procesos como cota superior).
 - Errores 413 / 500 propagados.
 - Abort del cliente a los 1,5 s.
 
 ## Método en una línea
 
 CPU por request vía CDP (`Profiler.start` → subida → `Profiler.stop`), estimada como
-`muestras no-idle × intervalo calibrado`; el ruido se mide con ventanas idle y es 0.
-La suma de `timeDeltas` prescrita en el brief se publica aparte porque sobreestima
-(workerd solo muestrea cuando ejecuta JS). No-buffering se demuestra con timestamps de
-llegada por chunk en el sink + SHA-256 enviado/recibido + throttle a 2 MB/s.
+`muestras no-idle × intervalo calibrado` (585,5 µs reales); como p95 = 1 muestra, se
+publica la **cota de 2 muestras (≤ 1,17 ms)**, no el paso de cuantización. El ruido se
+mide con ventanas idle y es 0. La suma de `timeDeltas` prescrita en el brief se publica
+aparte porque sobreestima (workerd solo muestrea cuando ejecuta JS). No-buffering se
+demuestra con timestamps de llegada por chunk en el sink + SHA-256 enviado/recibido +
+throttle a 2 MB/s, y con el **heap del isolate plano** (Δ ~5 KB con 20 y 50 MB).
 
 ## Caveats
 
 - Medición local (`wrangler dev`/workerd) sobre Ryzen 5 9600X: **no** es hardware de
   Cloudflare y **no** aplica el límite de 10 ms. El GO es una estimación con margen.
-- El sampler resuelve ~0,586 ms; `p50 = 0` significa “por debajo de una muestra”.
-- Sin concurrencia, sin memoria instrumentada, sin Groq/TLS.
+- El sampler resuelve ~0,586 ms; `p50 = 0` significa “por debajo de una muestra” y la
+  cifra publicada es la cota de 2 muestras. El perfil es **solo JS**: no incluye el
+  stream pumping nativo, así que es una cota inferior de la CPU facturable.
+- Sin concurrencia, sin Groq/TLS. **Heap del isolate medido** (Δ ≤ 13,3 KB con 20/50 MB);
+  OOM en Cloudflare real **no verificado** (seguimiento de despliegue).
 - `wrangler deploy --temporary` no existe en 4.156.0; no se desplegó nada.
 - El sink Bun no ve el cierre del socket; el abort se verifica con `sink-node.cjs`.
 

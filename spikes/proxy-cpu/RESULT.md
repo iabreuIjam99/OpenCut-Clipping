@@ -3,26 +3,36 @@
 **Veredicto: GO incondicional para el proxy mínimo (`fetch` puro) y GO incondicional
 para Elysia 1.4.30 con la ruta `POST /proxy` SIN `body` en el schema.** Ambos hacen
 streaming real (primer byte en el sink al 5,3 % / 5,2 % del envío), conservan el hash
-SHA-256 byte a byte, propagan 413/500 y miden **0,586 ms / 0,620 ms de CPU p95** con
-20 MB, muy por debajo del umbral de 8 ms.
+SHA-256 byte a byte, propagan 413/500, mantienen el **heap del isolate plano** (Δ pico
+**5 456 B / 5 624 B** con 20 MB y **5 456 B / 5 624 B** con 50 MB) y consumen
+**≤ 2 muestras ≈ ≤ 1,17 ms de CPU p95** con 20 MB (muestras no-idle p50/p95/máx =
+0/1/2), muy por debajo del umbral de 8 ms.
 
 **NO-GO solo para la variante de control `body: t.Any()`**, que consume el stream antes
 del handler, devuelve 500 y entrega 0 B al upstream. No es la ruta propuesta: demuestra
 la trampa y confirma que la ruta de transcripción **no necesita un Worker dedicado** si
 se mantiene sin schema de body.
 
-| Criterio R7 | Umbral GO | Minimal (`fetch` puro) | Elysia sin schema |
-|---|---|---|---|
-| CPU p95 con 20 MB | **< 8 ms** | **0,586 ms** (1 muestra) | **0,620 ms** (1 muestra) |
-| Buffering (20 MB a 2 MB/s) | primer byte < 1/3 del envío | **526 ms de 9 972 ms = 5,3 %** | **523 ms de 9 977 ms = 5,2 %** |
-| Integridad del cuerpo | SHA-256 idéntico | **match** (20 000 176 B) | **match** (20 000 176 B) |
-| Errores propagados | 413 y 500 llegan | **413 ×3, 500 ×3** | **413 ×3, 500 ×3** |
-| Crash / OOM | ninguno | **ninguno** (60 req/config × 3 reps + 50 MB) | **ninguno** |
-| Escalado | pendiente en µs/MB | p95 plano < 0,59 ms de 1 a 50 MB | p95 plano < 0,62 ms de 1 a 50 MB |
+| Criterio R7 | Umbral GO | Minimal (`fetch` puro) | Elysia sin schema | Método |
+|---|---|---|---|---|
+| CPU p95 con 20 MB | **< 8 ms** | **≤ 2 muestras ≈ ≤ 1,17 ms** (0/1/2) | **≤ 2 muestras ≈ ≤ 1,18 ms** (0/1/2) | conteo de muestras no-idle × intervalo calibrado (§3.1) |
+| Buffering (20 MB a 2 MB/s) | primer byte < 1/3 del envío | **526 ms de 9 972 ms = 5,3 %** | **523 ms de 9 977 ms = 5,2 %** | timestamps por chunk del sink (§7.1) |
+| Integridad del cuerpo | SHA-256 idéntico | **match** (20 000 176 B) | **match** (20 000 176 B) | SHA-256 cliente vs sink |
+| Errores propagados | 413 y 500 llegan | **413 ×3, 500 ×3** | **413 ×3, 500 ×3** | §8.2 |
+| **Heap del isolate** (sustituye a “sin OOM”) | Δ pico ≪ tamaño del cuerpo | **Δ 5 456 B** (20 MB) y **5 456 B** (50 MB); `totalSize` 3 670 016 B | **Δ 5 624 B** y **5 624 B**; `totalSize` 5 730 304 B | `Runtime.getHeapUsage` cada 50 ms (§3.4) |
+| Sin OOM en Cloudflare real | — | **no verificado** (seguimiento) | **no verificado** (seguimiento) | — |
+| Escalado | cota en µs/MB | p95 plano de 1 a 50 MB; 5,4 MB y 11,9 MB ≤ 2 muestras | ídem | §5 |
 
-Margen sobre el umbral: **7,414 ms** (minimal) y **7,380 ms** (Elysia) = 13,7× / 12,9×.
-La resolución del sampler es 0,586 ms; los valores por debajo de una muestra se reportan
-como 0 y se explican en §3.
+Margen sobre el umbral: **1,171 ms** (minimal) y **1,180 ms** (Elysia) frente a 8 ms =
+**6,8× / 6,8×**; frente al límite de **10 ms** de v1 = **8,5×**. (La ronda 0 calculaba
+13,7× restando los 0,586 ms nominales a 8 ms; ese número era cuantización, no medida.
+Ver §3.1.1.) El criterio “sin OOM” **se retiró del GO**: no se puede verificar en
+`wrangler dev`, y en su lugar queda la prueba medida de heap acotado.
+
+> **Corrección (Fix round 1).** La ronda 0 afirmaba “0,586 ms de CPU p95” y “sin OOM”
+> sin medir memoria. Ambas cosas están corregidas arriba: la CPU se reporta como cota de
+> 2 muestras y la memoria se midió con el inspector. Los números originales se conservan
+> en §4, §5 y §12 y se explican en §3.1.1, §3.1.2 y §13.
 
 ---
 
@@ -76,7 +86,8 @@ errores: 3; throttle: 3; abort: 1). La matriz completa está en `results/bench.j
 `scripts/measure-cpu.ts` se conecta al inspector de workerd
 (`ws://127.0.0.1:<inspector>/ws`, descubierto en `/json/list`) y por **cada request**:
 
-1. `Profiler.enable` + `Profiler.setSamplingInterval(100 µs)`.
+1. `Profiler.enable` + `Profiler.setSamplingInterval(100 µs)` — **solicitado**; el
+   intervalo efectivo de este workerd es ~585,5 µs (§3.1.1).
 2. `Profiler.start` → subida completa (throttle/hash incluidos en el cliente) →
    `Profiler.stop`.
 3. Atribuye cada muestra a su `callFrame`; descarta `(idle)` y `(program)`.
@@ -118,6 +129,52 @@ distinto de cero.
 de desarrollo local completo (bundling, dev server, copias de loopback). Sirve para
 detectar crecimiento con los bytes, **no** para estimar la factura de Cloudflare.
 
+#### 3.1.1 Cuantización: por qué “0,586 ms” no es una medición
+
+`Profiler.setSamplingInterval(100 µs)` **no se aplica** en este workerd: la calibración
+con `/burn?ms=200` da un intervalo efectivo de **585,5 µs/muestra** (minimal) y
+**590,2 µs/muestra** (Elysia). El profiler además **solo emite muestras cuando ejecuta
+JS**: el proxy está idle esperando al cliente y al upstream la mayor parte del tiempo.
+
+Con 20 MB, el p95 es **1 muestra no-idle** y el máximo **2** en 60 requests. Un p95 de
+una muestra multiplicado por el intervalo da 585,5 µs, pero ese número es el **paso de
+cuantización**, no una medida: el coste real está en algún punto de **[0, 585,5 µs]**.
+Como el máximo observado es 2 muestras, la afirmación defendible es:
+
+> **CPU JS por request ≤ 2 muestras ≈ ≤ 1,171 ms** (minimal) / **≤ 1,180 ms** (Elysia).
+
+Esa es la cifra que usan las tablas: `cota = muestras no-idle máx × intervalo`. Los
+conteos crudos (`nonIdleSamples.p50/p95/max`) se publican en §4 y §5 para que la cota sea
+auditable. **El hallazgo no es que el CPU sea 0,586 ms: es que el CPU está por debajo de
+la capacidad de resolución del sampler.** El presupuesto de 8 ms tiene ≥6,8× de holgura
+frente a la cota, y ≥8,5× frente a los 10 ms de v1.
+
+No se puede mejorar la resolución subiendo el volumen: una corrida de ~10 s a 585 µs
+produce ~17 000 muestras totales, pero solo **1 no-idle** por request; el resto es idle.
+Eso confirma que el proxy **genuinamente casi no hace nada**, que es la conclusión útil.
+
+#### 3.1.2 Cota inferior: qué no ve el profiler
+
+El perfil V8 mide **solo JS**. **No** captura el trabajo nativo de workerd: copia de
+bytes entre el socket entrante y el `fetch` saliente (stream pumping), backpressure,
+framing HTTP/chunked, TLS, ni el coste del propio runtime. En Cloudflare la CPU
+facturable incluye ese trabajo del runtime, así que:
+
+- **`cpuEstimateUs` es una cota inferior**, no la CPU facturable;
+- el margen de ≥6,8× es sobre la parte JS, y la parte nativa queda **sin medir**;
+- aun así el GO es defendible porque el proxy no transforma el cuerpo (no parsea, no
+  copia en buffers propios, no reensambla), de modo que el trabajo nativo es el de un
+  passthrough de stream, y el margen disponible es amplio. La verificación exacta
+  requiere desplegar y leer la CPU facturable en el dashboard, que no se hizo (§10).
+
+#### 3.1.3 Derivados por MB y por chunk
+
+`cpuPerMbUs` (= media / tamaño) y `cpuPerChunkUs` (= media / chunks) **dividen una media
+de muestras cuantizadas**, así que **no son costes medidos**: son cotas superiores
+derivadas. Por eso el bench añade `cpuPerMbUpperUs` / `cpuPerChunkUpperUs`, calculados
+sobre el **p95 de muestras** en lugar de la media. Las tablas de §5 usan esas cotas y
+las etiquetan como tales.
+
 ### 3.2 Buffering
 
 El sink registra **timestamp de llegada de cada chunk** (`performance.now`), bytes
@@ -129,21 +186,68 @@ acumulados, `maxGap`, span del cuerpo y SHA-256. El cliente (`scripts/upload.ts`
 - **span de envío** = último `write` − primer `write`;
 - **span del sink** = último chunk − primer chunk;
 - **gap máximo** entre chunks;
-- **drift** = desviación máxima entre el perfil de bytes enviados y el recibido;
+- **drift** = `max |F_sink(u) − F_send(u)|` en puntos porcentuales. Se normaliza el eje
+  de tiempo de cada lado a [0,1] (envío: primer → último `write`; sink: primer → último
+  chunk), se calcula la fracción acumulada de bytes en cada punto `u` del eje del sink y
+  se compara con la fracción acumulada del envío interpolada en ese mismo `u`. Un proxy
+  que bufferea da ~100 % (todo llega al final); uno que streamea, pocos puntos.
+  **Necesita ≥3 writes del cliente:** con una sola escritura todos los puntos del envío
+  colapsan en `u = 0` con fracción 1, y la métrica degenera en ~99 % — artefacto de la
+  definición, no un fallo del proxy (§7.2);
 - **hash** enviado vs recibido.
 
 ### 3.3 Qué prueba y qué no
 
 **Prueba:** que el handler no materializa el cuerpo (streaming end-to-end con llegada
-incremental y hash), que la CPU de JS atribuible al proxy es < 1 muestra en p95 y no
-crece de 1 a 50 MB, que los códigos y cabeceras del upstream se propagan, que el abort
-del cliente cancela el fetch al upstream, y que Elysia sin schema no consume el stream.
+incremental y hash), que la CPU de JS atribuible al proxy es ≤ 2 muestras en p95 y no
+crece de 1 a 50 MB, que el **heap del isolate no crece con el tamaño del cuerpo**, que
+los códigos y cabeceras del upstream se propagan, que el abort del cliente cancela el
+fetch al upstream, y que Elysia sin schema no consume el stream.
 
 **No prueba:** CPU de producción en hardware de Cloudflare (otro CPU, reutilización de
-isolate, TLS/edge), concurrencia multi-tenant, memoria/OOM (no instrumentada; tampoco
-se observó OOM), latencia o comportamiento de Groq, ni el modelo de facturación del
-plan Free. `wrangler dev` **no aplica** el límite de 10 ms. El GO es una estimación con
-margen, no una medición de producción.
+isolate, TLS/edge), el trabajo nativo del runtime (§3.1.2), concurrencia multi-tenant,
+**OOM en el edge real** (el heap local está acotado, pero eso no es el límite de memoria
+de un isolate de producción), latencia o comportamiento de Groq, ni el modelo de
+facturación del plan Free. `wrangler dev` **no aplica** el límite de 10 ms. El GO es una
+estimación con margen, no una medición de producción.
+
+**Sobre el contraste en el edge (R3.2):** `wrangler deploy --help` de 4.156.0 **no
+expone `--temporary`** (solo `--dry-run`, que no despliega ni mide). No se intentó
+ningún despliegue y **no queda nada desplegado**.
+
+### 3.4 Memoria del isolate (heap) y RSS
+
+**Expectativa declarada antes de medir:** un proxy que **no** bufferea debe mostrar un
+Δ de heap de **pocos MB como máximo** con 20 MB (solo punteros y buffers del runtime);
+uno que **bufferee** mostraría **≈ el tamaño del cuerpo** (≈ 20 MB de Δ). Es la prueba
+más directa contra el buffering, más fuerte que “no hubo crash”.
+
+`scripts/measure-cpu.ts#sampleMemoryDuringUpload` usa el mismo inspector CDP:
+
+1. `Runtime.enable` + `Performance.enable` (si el build lo soporta).
+2. Lee **`Runtime.getHeapUsage` → `{usedSize, totalSize}`** como línea base.
+3. Lanza **una subida dedicada** (no la del perfilado) y muestrea `getHeapUsage` **cada
+   50 ms** mientras el cuerpo fluye.
+4. Espera **500 ms** de asentamiento y vuelve a leer el heap.
+5. Reporta **Δ pico** = `max(usedSize durante y después) − usedSize línea base`, más
+   `totalSize` (capacidad del heap) y `peakDeltaBytes` / `afterDeltaBytes`.
+
+Ritmo: **20 MB a 2 MB/s** y **50 MB a 5 MB/s** → ~10 s por medición, para que el
+muestreo cubra todo el stream. Se ejecuta para `minimal` y `elysia`, no para el control
+negativo ni en `--quick`.
+
+**`Performance.getMetrics` como contraste:** en workerd **2026-10-23**
+`Performance.enable` **no está soportado** y `Performance.getMetrics` no devuelve
+métricas. Se registra como nota en el resultado; el contraste queda **no disponible** y
+no se sustituye por una cifra inventada.
+
+**RSS del árbol de procesos (segunda señal, solo cota):** `WorkingSet64` y
+`PeakWorkingSet64` de los **7 procesos** del `wrangler dev` (node → wrangler → workerd →
+inspector → dev server), antes y después de la subida. Incluye runtime + isolate +
+inspector + dev server, por eso **es una cota superior y ruidosa**, no el heap del
+Worker: en una corrida el Δ de RSS con 20 MB salió **negativo** (−13,7 MB), señal de que
+el ruido (GC del host, page cache) domina la señal. Sirve para descartar un crecimiento
+del orden del cuerpo, nada más.
 
 **Sobre el contraste en el edge (R3.2):** `wrangler deploy --help` de 4.156.0 **no
 expone `--temporary`** (solo `--dry-run`, que no despliega ni mide). No se intentó
@@ -156,36 +260,57 @@ ningún despliegue y **no queda nada desplegado**.
 60 requests por implementación (20 × 3 reps). CPU en µs; `p50 = 0` significa “por
 debajo de una muestra”.
 
-| Impl | Status | CPU p50 | CPU p95 | CPU máx | Media | Ruido p95 | Wall p50 | Proc CPU/req | 1er byte | Drift | SHA |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| minimal | 200 ×60 | 0 | **586** | 1 171 | 166 | 0 | 146,4 ms | 96,1 ms | 21 ms | 17,4 % | match |
-| elysia | 200 ×60 | 0 | **620** | 1 180 | 236 | 0 | 145,7 ms | 100,8 ms | 19 ms | 20,7 % | match |
-| elysia-schema | **500 ×60** | 5 870 | 6 486 | 17 610 | 5 762 | 0 | 87,4 ms | 119,5 ms | — | 100 % | **0 B** |
+| Impl | Status | Muestras p50/p95/máx | CPU p50 | CPU p95 | CPU máx (cota) | Media | Ruido p95 | Wall p50 | Proc CPU/req | 1er byte | Drift | SHA |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| minimal | 200 ×60 | **0 / 1 / 2** | 0 | 586 | **1 171** | 166 | 0 | 146,4 ms | 96,1 ms | 21 ms | 17,4 % | match |
+| elysia | 200 ×60 | **0 / 1 / 2** | 0 | 620 | **1 180** | 236 | 0 | 145,7 ms | 100,8 ms | 19 ms | 20,7 % | match |
+| elysia-schema | **500 ×60** | 10 / 11 / 30 | 5 870 | 6 486 | 17 610 | 5 762 | 0 | 87,4 ms | 119,5 ms | — | 100 % | **0 B** |
 
-Lectura: p95 de una sola muestra (586/620 µs). El `wall` incluye al cliente, el sink y
-el overhead del profiler; no es CPU. La variante con schema **también estaría por
-debajo de 8 ms**, pero falla funcionalmente: el umbral de CPU es necesario, no
-suficiente.
+Lectura: p95 de **una sola muestra** (586/620 µs nominales) y máximo de **2**. La cifra
+defendible es la cota de 2 muestras: **≤ 1,171 ms / ≤ 1,180 ms** (§3.1.1). El `wall`
+incluye al cliente, el sink y el overhead del profiler; no es CPU. La variante con schema
+**también estaría por debajo de 8 ms**, pero falla funcionalmente: el umbral de CPU es
+necesario, no suficiente.
 
 ---
 
-## 5. Escalado 1 / 5 / 20 / 50 MB
+## 5. Escalado 1 / 5 / 5,4 / 11,9 / 20 / 50 MB
 
-Chunks de 1 MB, multipart, 60 requests por punto. `µs/MB` = media / tamaño; **no es una
-pendiente**: está dominada por la cuantización (0 o 1 muestra). La columna que decide
-es **p95**, plana.
+Chunks de 1 MB, multipart, 60 requests por punto. `µs/MB` **es una cota superior**
+derivada de la cuantización (p95 / tamaño), **no una pendiente ni un coste medido**; ver
+§3.1.3. La columna que decide es **p95 de muestras**, plano.
 
-| Tamaño | Minimal p95 | Minimal media | Minimal µs/MB | Proc ms/req | Elysia p95 | Elysia media | Elysia µs/MB | Proc ms/req |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 MB | 586 | 137 | 136,6 | 16,4 | 590 | 187 | 186,9 | 24,2 |
-| 5 MB | 586 | 127 | 25,4 | 50,3 | 590 | 207 | 41,3 | 40,4 |
-| 20 MB | 586 | 166 | 8,3 | 96,1 | 620 | 236 | 11,8 | 100,8 |
-| 50 MB | 586 | 215 | 4,3 | 182,0 | 590 | 138 | 2,8 | 197,4 |
+**Minimal** (`fetch` puro):
 
-**Conclusión:** no hay pendiente de CPU JS medible con el sampler: 20 MB y 50 MB cuestan
-lo mismo en p95 que 1 MB. El proceso local sí crece (~3,4 ms/MB de 1 a 50 MB), pero es
-el stack de desarrollo (bundling + dev server + copias de loopback), no el handler. Un
-proxy de streaming puro se comporta como plano, que es la firma esperada.
+| Tamaño | Muestras p50/p95/máx | Media µs | p95 µs | Cota µs | µs/MB (media, ronda 0) | µs/MB cota† | Proc ms/req |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 1 MB | 0 / 1 / 1 | 137 | 586 | 586 | 136,6 | 585,5 | 16,4 |
+| 5 MB | 0 / 1 / 1 | 127 | 586 | 586 | 25,4 | 117,1 | 50,3 |
+| **5,4 MB** (chunk 30 min) | 0 / 1 / 1 | 126 | 581 | **581** | 23,3 | 107,6 | 48,2 |
+| **11,9 MB** (1 h) | 0 / 1 / 2 | 194 | 610 | **1 162** | 16,3 | 51,3 | 72,7 |
+| 20 MB | 0 / 1 / 2 | 166 | 586 | 1 171 | 8,3 | 29,3 | 96,1 |
+| 50 MB (techo) | 0 / 1 / 2 | 215 | 586 | 1 171 | 4,3 | 11,7 | 182,0 |
+
+**Elysia sin schema:**
+
+| Tamaño | Muestras p50/p95/máx | Media µs | p95 µs | Cota µs | µs/MB (media, ronda 0) | µs/MB cota† | Proc ms/req |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 1 MB | 0 / 1 / 1 | 187 | 590 | 590 | 186,9 | 590,2 | 24,2 |
+| 5 MB | 0 / 1 / 1 | 207 | 590 | 590 | 41,3 | 118,0 | 40,4 |
+| **5,4 MB** (chunk 30 min) | 0 / 1 / 1 | 165 | 583 | **583** | 30,6 | 108,0 | 52,9 |
+| **11,9 MB** (1 h) | 0 / 1 / 2 | 175 | 583 | **1 180** | 14,7 | 49,0 | 77,1 |
+| 20 MB | 0 / 1 / 2 | 236 | 620 | 1 180 | 11,8 | 31,0 | 100,8 |
+| 50 MB (techo) | 0 / 1 / 2 | 138 | 590 | 1 180 | 2,8 | 11,8 | 197,4 |
+
+† Cota superior = p95 µs / tamaño (derivada de la cuantización, no medida); ver §3.1.3.
+La columna “media” es la de la ronda 0 y se conserva para comparar.
+
+**Conclusión:** no hay pendiente de CPU JS medible con el sampler. Los dos tamaños que
+importan al producto caen en la misma cota que 1 MB y 20 MB: **5,4 MB (chunk de 30 min)
+≤ 1 muestra ≈ 0,58 ms** y **11,9 MB (1 h) ≤ 2 muestras ≈ 1,16–1,18 ms**, igual que
+50 MB. El proceso local sí crece (~3,4 ms/MB de 1 a 50 MB), pero es el stack de
+desarrollo (bundling + dev server + copias de loopback), no el handler. Un proxy de
+streaming puro se comporta como plano, que es la firma esperada.
 
 ---
 
@@ -232,8 +357,56 @@ primer byte ≈ 10 s, span ≈ 0, drift ≈ 100 %. **No bufferea.**
 socket del cliente (20 MB en loopback), no el tiempo real de transferencia; por eso el
 primer byte (21 ms) puede parecer posterior al último `write`. Este control sirve para
 throughput e integridad, **no** para el ratio de primer byte. La prueba válida para R4
-es la de 2 MB/s (§7.1). El drift también degenera (99,18 %) cuando el cliente escribe en
-un solo chunk; solo es interpretable con ≥3 writes.
+es la de 2 MB/s (§7.1).
+
+**El 99,18 % de drift no es un fallo.** En las configuraciones de 1 MB el cliente
+escribe el cuerpo en **una sola escritura**; la definición de drift (§3.2) normaliza el
+eje del envío entre el primer y el último `write`, que coinciden, así que todos los
+puntos de envío caen en `u = 0` con fracción acumulada 1. Cualquier `u > 0` compara 1
+contra la fracción del sink (≈0 al principio) → ~99 %. Es un **artefacto de una sola
+escritura**, no buffering: el mismo proxy da 5,24 % cuando el envío tiene 21 writes
+(§7.1). La métrica solo es interpretable con ≥3 writes; por eso no se usa como criterio
+en el titular.
+
+### 7.3 Heap del isolate durante el stream (20 y 50 MB) — prueba de memoria
+
+Expectativa declarada antes de medir (§3.4): no-buffering → Δ de pocos KB/MB;
+buffering → Δ ≈ tamaño del cuerpo. Resultado (una subida dedicada por tamaño, heap
+muestreado cada 50 ms, 500 ms de asentamiento; `Runtime.getHeapUsage`):
+
+| Impl | Tamaño | Ritmo | Muestras | `usedSize` base | Pico | Después | **Δ pico** | Δ después | `totalSize` |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| minimal | 20 MB | 2 MB/s | 158 | 1 077 600 B | 1 083 056 B | 1 083 056 B | **5 456 B** | 5 456 B | 3 670 016 B |
+| minimal | 50 MB | 5 MB/s | 159 | 1 083 056 B | 1 088 512 B | 1 088 512 B | **5 456 B** | 5 456 B | 3 670 016 B |
+| elysia | 20 MB | 2 MB/s | 158 | 3 643 012 B | 3 648 636 B | 3 648 636 B | **5 624 B** | 5 624 B | 5 730 304 B |
+| elysia | 50 MB | 5 MB/s | 159 | 3 648 636 B | 3 654 260 B | 3 654 260 B | **5 624 B** | 5 624 B | 5 730 304 B |
+
+**Comparación con la expectativa:** el Δ pico es **~3 700× menor** que el cuerpo de
+20 MB y **~9 200× menor** que el de 50 MB; un proxy que bufferease habría mostrado un Δ
+del orden de 20–50 MB (≈ 0,003 % del cuerpo vs ~100 %). El heap **no crece con el
+tamaño**: 20 MB y 50 MB dan el mismo Δ. En una corrida previa de la misma build, minimal
+dio **5 440 B** (20 MB) y **13 308 B** (50 MB); el rango entre corridas es
+**5,4–13,3 KB**, siempre KB. `totalSize` es constante (3,5 MiB / 5,5 MiB), es decir, el
+runtime **no tuvo que expandir el heap**.
+
+Esto es la evidencia más fuerte contra el buffering: no solo el cuerpo llega
+incrementalmente (§7.1), sino que el isolate **no retiene el cuerpo**.
+
+**RSS del árbol de procesos (cota, no medida del isolate):**
+
+| Impl | Tamaño | WorkingSet antes → después | Δ | PeakWorkingSet antes → después |
+|---|---:|---|---:|---|
+| minimal | 20 MB | 496 320 512 → 511 541 248 B | +15,2 MB | 591 462 400 → 602 767 360 B |
+| minimal | 50 MB | 511 541 248 → 520 507 392 B | +9,0 MB | 602 767 360 → 613 011 456 B |
+| elysia | 20 MB | 551 378 944 → 566 439 936 B | +15,1 MB | 714 985 472 → 725 835 776 B |
+| elysia | 50 MB | 566 439 936 → 582 799 360 B | +16,4 MB | 725 835 776 → 740 458 496 B |
+
+Son **7 procesos** (node → wrangler → workerd → inspector → dev server) y el RSS
+acumula el estado del dev server entre mediciones. **No es proporcional al cuerpo**
+(con 50 MB crece menos que con 20 MB en minimal) y en una corrida previa el Δ con 20 MB
+salió **negativo** (−13,7 MB): el ruido del host domina. Sirve para descartar un
+crecimiento del orden del cuerpo, **no** para afirmar cuánta memoria usa el isolate. La
+cifra que decide es la de heap.
 
 **Integridad:** SHA-256 idéntico en todos los casos válidos, incluidos 1/5/20/50 MB,
 64 KB/1 MB/4 MB, multipart y octet-stream. Bytes enviados = recibidos = 20 000 176 B
@@ -321,26 +494,33 @@ streamear, nunca con `body: t.Any()`.
 
 1. **Medición local, no de producción.** workerd sobre Ryzen 5 9600X; `wrangler dev`
    **no aplica** el límite de 10 ms ni reproduce el hardware/edge de Cloudflare. El GO
-   es una estimación con 13× de margen, no una medición facturable.
-2. **Resolución del sampler:** 0,586 ms. `p50 = 0` y `p95 = 586 µs` significan “0 o 1
-   muestra”, no “cero absoluto”. El ruido también es 0, así que la señal de 1 muestra
+   es una estimación con **≥6,8× de margen sobre la cota de CPU JS**, no una medición
+   facturable.
+2. **Resolución del sampler:** 585,5 / 590,2 µs por muestra. `p50 = 0` y `p95 = 1
+   muestra` significan “0 o 1 muestra”, no “cero absoluto”; la cifra publicada es la
+   **cota de 2 muestras** (§3.1.1). El ruido también es 0, así que la señal de 1 muestra
    está por encima del suelo, pero no se puede resolver más fino con este sampler.
 3. **CPU de proceso** incluye el stack de desarrollo y no es facturable; solo se usa
    como cota superior y para ver la pendiente.
 4. **Sin concurrencia:** las requests son secuenciales. No se prueba multi-tenant,
    límites de isolates ni contención.
-5. **Sin memoria instrumentada:** no se midió pico de heap; no se observó OOM ni crash
-   en 60 req/config × 3 reps, incluido 50 MB.
+5. **Memoria:** el **heap del isolate sí se midió** (§7.3: Δ 5,4–13,3 KB con 20 y
+   50 MB, `totalSize` constante). **No** se midió el límite de memoria de un isolate
+   real ni se verificó ausencia de OOM en Cloudflare: `Performance.getMetrics` no está
+   soportado en este workerd, el RSS es una cota ruidosa y el edge no se probó. **“Sin
+   OOM” no forma parte del GO**: es un seguimiento de despliegue.
 6. **Sin Groq/TLS:** upstream local por loopback. No se prueba latencia, TLS, ni el
    comportamiento real de Groq.
 7. **Sin contraste en el edge:** `wrangler deploy --temporary` no existe en 4.156.0; no
    se desplegó nada.
 8. **Abort:** el sink Bun no ve el cierre del socket; la propagación se demuestra con un
    upstream Node (`sink-node.cjs`), no con el sink del bench.
-9. **Drift** no es interpretable con una sola escritura del cliente (99,18 %): se
-   reporta solo donde hay ≥3 writes.
+9. **Drift** no es interpretable con una sola escritura del cliente (99,18 %): es un
+   artefacto de la definición (§3.2, §7.2); se reporta solo donde hay ≥3 writes.
 10. **El plan Free factura CPU, no “wake-ups” por chunk**; la tabla de chunks mide el
     efecto observable en este entorno, que es nulo a esta resolución.
+11. **CPU facturable ≠ CPU JS medida:** el profiler V8 no ve el stream pumping nativo de
+    workerd (§3.1.2); la cifra es una **cota inferior**.
 
 ---
 
@@ -366,6 +546,20 @@ bun run bench -- --only minimal
 bun run bench -- --only elysia --configs headline-20mb,throttled-20mb
 bun run bench -- --quick          # 5 req × 1 rep, smoke test
 ```
+
+**Tamaños de producción (5,4 MB = chunk de 30 min; 11,9 MB = 1 h) y memoria**, sin
+repetir la matriz completa (`--merge` conserva los resultados previos y solo reemplaza
+las configuraciones corridas + la memoria):
+
+```powershell
+bun run bench -- --only minimal --configs scale-5.4mb,scale-11.9mb --merge
+bun run bench -- --only elysia  --configs scale-5.4mb,scale-11.9mb --merge
+```
+
+La sonda de memoria (`mem-20mb`, `mem-50mb`) se ejecuta automáticamente en cada corrida
+no-`--quick` de `minimal` y `elysia`: sube 20 MB a 2 MB/s y 50 MB a 5 MB/s, muestrea
+`Runtime.getHeapUsage` cada 50 ms y escribe `impl.memory[]` en `results/bench.json`
+(`peakDeltaBytes`, `baseline`/`peak`/`after`, `sampleCount`, `processRss`).
 
 ### 11.2 Medición suelta (sink + dev server + cliente)
 
@@ -424,9 +618,123 @@ o `8798`; no tocar `apps/web` (`8787`).
 ## 12. Conclusión
 
 El proxy de streaming es viable tal cual: **`request.body` → `fetch(upstream, {body})`
-sin buffering**, con CPU JS por debajo de una muestra del sampler (0,586 ms p95 con
-20 MB) y sin crecimiento de 1 a 50 MB. Elysia 1.4.30 **conserva el streaming si la ruta
+sin buffering**, con **CPU JS ≤ 2 muestras ≈ ≤ 1,17 ms** con 20 MB (muestras no-idle
+p50/p95/máx = 0/1/2; la ronda 0 reportaba “0,586 ms p95”, que era el paso de
+cuantización) y **sin crecimiento medible de 1 a 50 MB**. El **heap del isolate se
+mantiene plano**: Δ pico 5 456 B / 5 624 B con 20 y 50 MB, con `totalSize` constante, es
+decir, el isolate no retiene el cuerpo. Elysia 1.4.30 **conserva el streaming si la ruta
 no declara `body`**; el patrón de `apps/api` sirve, no hace falta un Worker dedicado.
 La única trampa es declarar `body: t.Any()`: consume el stream, devuelve 500 y entrega
 0 B. **GO incondicional para minimal y Elysia sin schema; NO-GO para la variante con
 schema.**
+
+Dos matices que el GO asume explícitamente: el CPU medido es **solo JS** (cota
+inferior; el stream pumping nativo no está en el perfil) y **la ausencia de OOM en
+Cloudflare no está verificada**: lo medido es heap acotado en workerd local. El margen
+de ≥6,8× sobre 8 ms es lo que hace defendible el GO con esas dos incógnitas.
+
+---
+
+## 13. Fix round 1 — correcciones de la revisión
+
+Esta sección documenta la revisión y **no reescribe** la ronda 0: los números originales
+siguen visibles en §4 (p95/media), §5 (columna “µs/MB (media, ronda 0)”) y §12.
+
+### 13.1 C1 — “sin OOM” no estaba medido (crítico)
+
+| Antes (ronda 0) | Ahora |
+|---|---|
+| “Crash / OOM: ninguno (60 req × 3 reps + 50 MB)”, sin instrumentación | **Heap del isolate medido** con `Runtime.getHeapUsage` antes/durante/después; “sin OOM” **retirado** del GO y marcado como seguimiento en Cloudflare real |
+
+**Expectativa declarada antes de medir:** no-buffering → Δ de pocos MB como máximo con
+20 MB; buffering → Δ ≈ tamaño del cuerpo.
+
+**Resultado (Δ pico de `usedSize`):**
+
+| Impl | 20 MB | 50 MB | `totalSize` | Muestras |
+|---|---:|---:|---:|---:|
+| minimal | **5 456 B** | **5 456 B** | 3 670 016 B | 158 / 159 |
+| elysia | **5 624 B** | **5 624 B** | 5 730 304 B | 158 / 159 |
+
+Rango entre corridas (2 corridas, misma build): **5 440–13 308 B**, siempre KB. El Δ es
+~3 700× menor que el cuerpo de 20 MB y ~9 200× menor que el de 50 MB, y **no crece con
+el tamaño**. Detalle, RSS y método en §3.4 y §7.3.
+
+**Método:** una subida dedicada por tamaño (20 MB @ 2 MB/s, 50 MB @ 5 MB/s), muestreo de
+`Runtime.getHeapUsage` cada 50 ms, 500 ms de asentamiento y lectura final;
+`Performance.enable`/`getMetrics` **no soportado** en workerd 2026-10-23 (documentado,
+sin sustituirlo por una cifra); RSS del árbol de 7 procesos como cota superior ruidosa.
+
+**Efecto en el veredicto:** el GO sigue siendo incondicional, pero ahora **cada criterio
+R7 apunta a un número medido y a su método** (tabla del encabezado). La afirmación “sin
+OOM” **ya no se hace**: en su lugar está “heap acotado, sin buffering”, y el OOM en el
+edge real queda como **seguimiento de despliegue**.
+
+### 13.2 I1 — el titular de CPU era una sola muestra
+
+`setSamplingInterval(100 µs)` no se aplica: el intervalo efectivo es **585,5 µs**
+(minimal) / **590,2 µs** (Elysia). Con p95 = **1 muestra** y máx = **2**, “0,586 ms” era
+el paso de cuantización. El titular pasa a:
+
+- **≤ 2 muestras ≈ ≤ 1,171 ms** (minimal) y **≤ 1,180 ms** (Elysia);
+- conteos crudos publicados: `nonIdleSamples.p50/p95/max = 0/1/2`;
+- márgenes: **6,8×** frente a 8 ms y **8,5×** frente a 10 ms (el “13,7×” de la ronda 0
+  se retira: restaba una cifra nominal).
+
+**El hallazgo es el conteo bajo**: el proxy está por debajo de la resolución del
+sampler. Subir el volumen no ayuda (una corrida de ~10 s da ~17 000 muestras totales y
+~1 no-idle por request): el proxy genuinamente casi no hace nada. Ver §3.1.1.
+
+### 13.3 I2 — atribución: el profiler no ve el runtime
+
+El perfil V8 mide **solo JS**; no captura el stream pumping nativo de workerd,
+backpressure, framing HTTP ni TLS. La cifra es una **cota inferior**, no la CPU
+facturable. El GO se apoya en que el proxy es un passthrough sin transformación y en el
+margen ≥6,8×, no en que “CPU medida = CPU facturada”. Ver §3.1.2.
+
+### 13.4 I3 — tamaños de producción
+
+Añadidas las configuraciones `scale-5.4mb` y `scale-11.9mb` (se conserva `scale-5mb`
+por continuidad) y las filas correspondientes en §5:
+
+| Tamaño | Minimal muestras | Minimal cota | Elysia muestras | Elysia cota |
+|---:|---|---:|---|---:|
+| **5,4 MB** (chunk 30 min) | 0 / 1 / 1 | **581 µs** | 0 / 1 / 1 | **583 µs** |
+| **11,9 MB** (1 h) | 0 / 1 / 2 | **1 162 µs** | 0 / 1 / 2 | **1 180 µs** |
+
+Ambos caen en la misma cota que 1 MB y 20 MB; 50 MB se mantiene como techo.
+
+### 13.5 Menores
+
+- **Drift definido** como `max |F_sink(u) − F_send(u)|` con ambos ejes normalizados a
+  [0,1] (§3.2) y explicado el **99,18 %** como artefacto de una sola escritura: todos los
+  puntos del envío colapsan en `u = 0` con fracción 1 (§7.2). No es un fallo; el mismo
+  proxy da 5,24 % con 21 writes.
+- **`cpuPerMbUs` / `cpuPerChunkUs` etiquetados como cotas superiores** derivadas de
+  cuantización (§3.1.3) y añadidos `cpuPerMbUpperUs` / `cpuPerChunkUpperUs` calculados
+  sobre el p95 de muestras; las tablas de §5 usan la cota y conservan la columna media
+  original.
+
+### 13.6 Cambios de código y comandos
+
+- `scripts/measure-cpu.ts`: `sampleMemoryDuringUpload` (`Runtime.getHeapUsage` cada
+  50 ms, `Performance.getMetrics` como contraste opcional, lectura final tras
+  asentamiento).
+- `scripts/bench.ts`: sonda de memoria por implementación (`runMemoryProbe`), RSS del
+  árbol de procesos, configs `scale-5.4mb`/`scale-11.9mb`, `cpuPerMbUpperUs` /
+  `cpuPerChunkUpperUs`, y `--merge` para añadir configuraciones sin repetir la matriz.
+- Sin dependencias nuevas, sin secretos, sin Groq, sin despliegue.
+
+```powershell
+bun run bench -- --only minimal --configs scale-5.4mb,scale-11.9mb --merge
+bun run bench -- --only elysia  --configs scale-5.4mb,scale-11.9mb --merge
+bun run typecheck   # exit 0
+```
+
+### 13.7 Veredicto tras la corrección
+
+**GO incondicional para minimal y Elysia sin schema**, con criterios medidos: CPU
+≤ 2 muestras (≤ 1,17 ms, margen 6,8× sobre 8 ms), no-buffering (primer byte 5,3 %),
+integridad SHA, errores propagados y **heap acotado (Δ ≤ 13,3 KB con 20 y 50 MB)**.
+**NO-GO para `body: t.Any()`**. **“Sin OOM” ya no es un criterio del GO**: queda como
+verificación pendiente en un despliegue real.

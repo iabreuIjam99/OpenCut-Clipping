@@ -291,6 +291,168 @@ export interface CalibrationResult {
   runs: CpuSummary[];
 }
 
+export interface HeapUsage {
+  usedSize: number;
+  totalSize: number;
+}
+
+export interface MemorySample extends HeapUsage {
+  /** ms desde el inicio de la subida */
+  tMs: number;
+}
+
+export interface MemoryProbeOptions {
+  inspectorPort: number;
+  upload: Omit<UploadOptions, "url"> & { url: string };
+  /** periodo de muestreo de `Runtime.getHeapUsage` */
+  sampleIntervalMs?: number;
+  /** espera tras completar la subida antes de la lectura final */
+  settleMs?: number;
+}
+
+/**
+ * Muestreo de memoria del isolate durante UNA subida.
+ *
+ * Expectativa declarada antes de medir: un proxy que no bufferea debe mostrar un
+ * delta de heap de pocos MB como máximo con 20 MB; uno que bufferee mostraría
+ * ≈ el tamaño del cuerpo. Se lee `Runtime.getHeapUsage` antes, durante (cada
+ * `sampleIntervalMs`) y después; `Performance.getMetrics` se guarda como
+ * contraste si expone `JSHeapUsedSize`/`JSHeapTotalSize`.
+ */
+export interface MemoryProbeResult {
+  sizeMb: number;
+  rateMb: number;
+  upload: { status: number; sentBytes: number; wallMs: number; sha256: string };
+  baseline: HeapUsage | null;
+  peak: HeapUsage | null;
+  after: HeapUsage | null;
+  peakDeltaBytes: number | null;
+  afterDeltaBytes: number | null;
+  sampleCount: number;
+  samples: MemorySample[];
+  performanceBefore: Record<string, number> | null;
+  performanceAfter: Record<string, number> | null;
+  notes: string[];
+}
+
+async function readHeap(client: CdpClient): Promise<HeapUsage> {
+  const usage = await client.send<Partial<HeapUsage>>("Runtime.getHeapUsage");
+  return { usedSize: usage.usedSize ?? 0, totalSize: usage.totalSize ?? 0 };
+}
+
+async function readPerformanceMetrics(
+  client: CdpClient,
+): Promise<Record<string, number> | null> {
+  try {
+    const result = await client.send<{ metrics?: { name: string; value: number }[] }>(
+      "Performance.getMetrics",
+    );
+    if (!Array.isArray(result.metrics)) return null;
+    const metrics: Record<string, number> = {};
+    for (const metric of result.metrics) metrics[metric.name] = metric.value;
+    return metrics;
+  } catch {
+    return null;
+  }
+}
+
+export async function sampleMemoryDuringUpload(
+  options: MemoryProbeOptions,
+): Promise<MemoryProbeResult> {
+  const notes: string[] = [];
+  const sampleIntervalMs = options.sampleIntervalMs ?? 50;
+  const settleMs = options.settleMs ?? 500;
+  const wsUrl = await discoverInspector(options.inspectorPort);
+  const client = await CdpClient.connect(wsUrl);
+
+  try {
+    try {
+      await client.send("Runtime.enable");
+    } catch {
+      notes.push("Runtime.enable no soportado; se intenta Runtime.getHeapUsage igualmente");
+    }
+    let performanceEnabled = true;
+    try {
+      await client.send("Performance.enable");
+    } catch {
+      performanceEnabled = false;
+      notes.push("Performance.enable no soportado en este workerd");
+    }
+
+    const baseline = await readHeap(client);
+    const performanceBefore = performanceEnabled
+      ? await readPerformanceMetrics(client)
+      : null;
+    if (performanceBefore === null) {
+      notes.push("Performance.getMetrics no devolvió métricas");
+    }
+
+    const samples: MemorySample[] = [];
+    const startedAt = performance.now();
+    let done = false;
+    const sampler = (async () => {
+      while (!done) {
+        await Bun.sleep(sampleIntervalMs);
+        if (done) break;
+        try {
+          const heap = await readHeap(client);
+          samples.push({ tMs: Math.round(performance.now() - startedAt), ...heap });
+        } catch (error) {
+          notes.push(
+            `muestreo de heap interrumpido: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          break;
+        }
+      }
+    })();
+
+    let upload: UploadResult;
+    try {
+      upload = await uploadOnce(options.upload);
+    } finally {
+      done = true;
+      await sampler;
+    }
+
+    await Bun.sleep(settleMs);
+    const after = await readHeap(client);
+    const performanceAfter = performanceEnabled
+      ? await readPerformanceMetrics(client)
+      : null;
+
+    const peak = samples.reduce<HeapUsage>(
+      (best, sample) => (sample.usedSize > best.usedSize ? sample : best),
+      baseline,
+    );
+    const peakWithAfter = after.usedSize > peak.usedSize ? after : peak;
+
+    return {
+      sizeMb: Math.round((options.upload.sizeBytes / 1_000_000) * 100) / 100,
+      rateMb: Math.round(((options.upload.rateBytesPerSec ?? 0) / 1_000_000) * 100) / 100,
+      upload: {
+        status: upload.status,
+        sentBytes: upload.sentBytes,
+        wallMs: upload.wallMs,
+        sha256: upload.sentSha256,
+      },
+      baseline,
+      peak: peakWithAfter,
+      after,
+      peakDeltaBytes: peakWithAfter.usedSize - baseline.usedSize,
+      afterDeltaBytes: after.usedSize - baseline.usedSize,
+      sampleCount: samples.length,
+      samples,
+      performanceBefore,
+      performanceAfter,
+      notes,
+    };
+  } finally {
+    client.close();
+  }
+}
+
 /**
  * Calibra el sampler de workerd: quema `burnMs` de CPU JS conocida y divide el
  * CPU atribuido entre el número de muestras no-idle. Se hace UNA vez por worker
