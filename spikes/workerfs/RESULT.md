@@ -8,9 +8,9 @@ webm`, ADR-02 / `plan.md` Task 6 Step 2) y con la **medición de memoria** ejecu
 
 | Criterio de aceptación (Task 6 / R8) | Umbral GO | Medido con el comando de producción | Estado |
 |---|---|---|---|
-| 2 GB monta y extrae sin OOM | obligatorio | 2.310.941.040 B montados con WORKERFS (`mount` 0,13 ms); `exit 0`; **pico UASM 28,05 MB** frente a cota `jsHeapSizeLimit` 4192 MB (margen ×149) | **PASS** |
-| 1 h → audio en < 3 min | < 180.000 ms | **59.751 ms** de `exec` (1 h); 12.733 ms (10 min); 231 ms (30 s). Pared total de la corrida de 1 h ≈ 68 s (incluida la medición UASM final) | **PASS** |
-| Tamaño de salida (1 h) | ≤ 15.000.000 B | **11.903.838 B** = 11,90 MB (10⁶) / 11,35 MiB; extrapolado **11.903.765 B/h** | **PASS** |
+| 2 GB monta y extrae sin OOM | obligatorio | 2 310 941 040 B montados con WORKERFS (`mount` 0,13 ms); `exit 0`; **pico UASM 28,05 MB** frente a cota `jsHeapSizeLimit` 4192 MB (margen ×149) | **PASS** |
+| 1 h → audio en < 3 min | < 180 s (180 000 ms) | **59 751 ms (59,75 s)** de `exec` (1 h); **12 733 ms (12,73 s)** (10 min); 231 ms (0,23 s) (30 s). Pared total de la corrida de 1 h ≈ 68 s, desglosada en `exec` 59,75 s (extracción: el número que se compara con < 180 s) + arranque, lectura, `decodeAudioData` y espera de la medición UASM final (~8 s, componente aparte) | **PASS** |
+| Tamaño de salida (1 h) | ≤ 15 MB (15 000 000 B) | **11 903 838 B** = 11,90 MB (10⁶) / 11,35 MiB; extrapolado **11 903 765 B/h** | **PASS** |
 | Pestaña sobrevive (sin crash) | obligatorio | **8 ejecuciones completas** `exit 0`, sin OOM ni crash de pestaña | **PASS** |
 
 Unidad: «MB» = 10⁶ B (el umbral de 15 MB se cumple también leyéndolo como 15 MiB:
@@ -30,7 +30,7 @@ Unidad: «MB» = 10⁶ B (el umbral de 15 MB se cumple también leyéndolo como 
 | `crossOriginIsolated` | **true** (COOP `same-origin` + COEP `require-corp` + CORP `cross-origin`; verificados con `curl -I` sobre el dev server; ahora también en `preview`, ver §12) |
 | `jsHeapSizeLimit` | 4192 MB |
 | API de memoria | `performance.measureUserAgentSpecificMemory()` disponible; Chrome 156 devuelve `{ bytes, breakdown }` con `attribution: [{scope, url}]` y `types` |
-| Latencia de la UASM | **10.023 ms por llamada en reposo** (cronometrada); hasta ~28 s bajo carga — limita la frecuencia de muestreo (ver §7) |
+| Latencia de la UASM | **10 023 ms (10,02 s) por llamada en reposo** (cronometrada); hasta ~28 s bajo carga — limita la frecuencia de muestreo (ver §7) |
 | Runtime de build | Bun 1.3.11 (spike autocontenido, sin tocar raíz/`apps/*`) |
 
 ## 2. Core, códecs y cadena R3
@@ -87,14 +87,14 @@ determinista (`bitrate × duración`).
 
 | Fichero (en disco) | Bytes | Tamaño | Duración |
 |---|---:|---:|---:|
-| `fixtures/short-30s.mp4` | 1.764.861 | 1,68 MiB | 30 s |
-| `fixtures/medium-10min.mp4` | 520.083.000 | 496 MiB (~500 MB) | 600 s |
-| `fixtures/large-2gb.mp4` | **2.310.941.040** | **2,15 GiB** (> 2³¹) | **3.600 s** |
+| `fixtures/short-30s.mp4` | 1 764 861 | 1,68 MiB | 30 s |
+| `fixtures/medium-10min.mp4` | 520 083 000 | 496 MiB (~500 MB) | 600 s |
+| `fixtures/large-2gb.mp4` | **2 310 941 040** | **2,15 GiB** (> 2³¹) | **3 600 s** |
 
 **`large-2gb.mp4` es UN solo fixture que cubre ambos umbrales de Step 3** («probar con
-500 MB, 2 GB y un fichero de 1 h»): pesa **2.310.941.040 B ≥ 2 GB** y dura
-**3.600.000 ms = 1 h** exacta. No existe un fixture «1 h» separado pendiente: no es una
-laguna sin medir. El paso de 500 MB lo cubre `medium-10min` (520.083.000 B) y el de
+500 MB, 2 GB y un fichero de 1 h»): pesa **2 310 941 040 B ≥ 2 GB** y dura
+**3 600 000 ms (1 h)** exacta. No existe un fixture «1 h» separado pendiente: no es una
+laguna sin medir. El paso de 500 MB lo cubre `medium-10min` (520 083 000 B) y el de
 2 GB + 1 h, `large-2gb`. Ninguno se commitea (`.gitignore`: `node_modules/`,
 `fixtures/`, `dist/`, `public/`, `*.log`).
 
@@ -102,7 +102,7 @@ laguna sin medir. El paso de 500 MB lo cubre `medium-10min` (520.083.000 B) y el
 `sine=frequency=440` pasado por el AAC nativo de ffmpeg (`-b:a 128k`). El seno lavfi
 puro mide crest 1,414 (PCM directo); la cadena `sine → AAC` mide **crest 2,142**
 (pico −14,46 dB, RMS −21,08 dB) — idéntico al del fixture en disco, y un FLAC 16 kHz
-mono del fixture ocupa **616.193 B / 30 s (164 kbps)**, o sea que el audio decodificado
+mono del fixture ocupa **616 193 B / 30 s (164 kbps)**, o sea que el audio decodificado
 **no** es un seno simple para los codificadores. Esto explica el comportamiento de
 tamaño de §8 y es reproducible con el comando del script.
 
@@ -122,17 +122,18 @@ UI es solo un diagnóstico que reintenta el comando literal sin el flag (§5).
 
 | Run (producción) | Entrada (B) | mount (ms) | exec (ms) | Salida (B) | B/s | Extrapolado B/h | Duración salida (ms) | MIME | exit |
 |---|---:|---:|---:|---:|---:|---:|---:|---|---:|
-| `short-30s-cbr` | 1.764.861 | 0,29 | **231** | **99.938** | 3.331,27 | 11.992.560 (11,99 MB) | 30.000 | `audio/webm` | **0** |
-| `medium-10min-cbr` | 520.083.000 | 0,29 | **12.733** | **1.984.572** | 3.307,60 | 11.907.353 (11,91 MB) | 600.004 | `audio/webm` | **0** |
-| `large-2gb-cbr` | 2.310.941.040 | 0,13 | **59.751** | **11.903.838** | 3.306,60 | 11.903.765 (11,90 MB) | 3.600.022 | `audio/webm` | **0** |
+| `short-30s-cbr` | 1 764 861 | 0,29 | **231** | **99 938** | 3 331,27 | 11 992 560 (11,99 MB) | 30 000 | `audio/webm` | **0** |
+| `medium-10min-cbr` | 520 083 000 | 0,29 | **12 733 (12,73 s)** | **1 984 572** | 3 307,60 | 11 907 353 (11,91 MB) | 600 004 | `audio/webm` | **0** |
+| `large-2gb-cbr` | 2 310 941 040 | 0,13 | **59 751 (59,75 s)** | **11 903 838** | 3 306,60 | 11 903 765 (11,90 MB) | 3 600 022 | `audio/webm` | **0** |
 
 - `outcome: "OK"` en los tres casos; duración verificada con
-  `AudioContext.decodeAudioData` (30.000 / 600.004 / 3.600.022 ms — coincide con la
+  `AudioContext.decodeAudioData` (30 000 / 600 004 / 3 600 022 ms, o sea
+  30 / 600 / 3 600 s — coincide con la
   duración del vídeo de entrada: el archivo se procesó **entero**).
 - Reejecución de verificación con el código final (`short-30s-cbr`, 8.ª entrada):
-  `exec 226 ms`, salida **99.938 B** — byte a byte idéntico, `exit 0`.
+  `exec 226 ms`, salida **99 938 B (97,6 KiB)** — byte a byte idéntica, `exit 0`.
 - Corrida CBR previa a la instrumentación (round 0, conservada):
-  `large-2gb-cbr` = **11.903.838 B en 47.750 ms** — bytes idénticos a los de arriba:
+  `large-2gb-cbr` = **11 903 838 B en 47 750 ms (47,75 s)** — bytes idénticos a los de arriba:
   el CBR es determinista, el `exec` varía con la carga de muestreo.
 - Persistencia: resultados a `localStorage` cada 10 s; una caída de pestaña deja un run
   en `RUNNING` recuperable como `INTERRUPTED`.
@@ -144,12 +145,12 @@ de por qué ese comando no puede sostener el veredicto:
 
 | Run literal | Salida (B) | B/s | Extrapolado B/h | Cumple ≤ 15 MB |
 |---|---:|---:|---:|---|
-| `short-30s` | 148.139 | 4.937,97 | 17.776.800 (17,78 MB) | **NO** |
-| `medium-10min` | 2.999.666 | 4.999,41 | 17.997.876 (18,00 MB) | **NO** |
-| `large-2gb` (exec 49.251 ms, exit 0) | 18.001.893 | 5.000,50 | 18.001.783 (18,00 MB) | **NO** |
+| `short-30s` | 148 139 | 4 937,97 | 17 776 800 (17,78 MB) | **NO** |
+| `medium-10min` | 2 999 666 | 4 999,41 | 17 997 876 (18,00 MB) | **NO** |
+| `large-2gb` (exec 49 251 ms (49,25 s), exit 0) | 18 001 893 | 5 000,50 | 18 001 783 (18,00 MB) | **NO** |
 
 El VBR de Opus a target 24 kbps consume ~40 kbps de media sobre este contenido
-(148.088 B/30 s = 39,5 kbps) → desvío ×1,65. Es reproducible **nativamente** (§6) y es
+(148 088 B/30 s = 39,5 kbps) → desvío ×1,65. Es reproducible **nativamente** (§6) y es
 una propiedad del contenido + rate control, no de la arquitectura. Con `-vbr off` el
 tamaño queda acotado de forma determinista y **ninguna fila de §4 supera 15 MB**.
 
@@ -159,13 +160,13 @@ Sobre `fixtures/short-30s.mp4` (30 s), binario nativo:
 
 | Comando nativo | Bytes (30 s) | Extrapolado ×120 (1 h) | Browser (1 h) |
 |---|---:|---:|---:|
-| literal (`libopus -b:a 24k` VBR) | **148.088** | 17,77 MB | **18.001.893 B** ✓ |
-| literal + `-vbr off` (CBR) | **99.937** | 11,99 MB | **11.903.838 B** ✓ |
-| `-b:a 16k` VBR | 79.394 | 9,53 MB | — |
-| `-c:a flac -ac 1 -ar 16000` | 616.193 | — | — |
+| literal (`libopus -b:a 24k` VBR) | **148 088** | 17,77 MB | **18 001 893 B** ✓ |
+| literal + `-vbr off` (CBR) | **99 937** | 11,99 MB | **11 903 838 B** ✓ |
+| `-b:a 16k` VBR | 79 394 | 9,53 MB | — |
+| `-c:a flac -ac 1 -ar 16000` | 616 193 | — | — |
 
-**El nativo y el WASM coinciden casi byte a byte**: 148.088 vs 148.139 (VBR, 51 B,
-0,03 %) y 99.937 vs 99.938 (CBR, **1 B**). El tamaño de salida es una propiedad del
+**El nativo y el WASM coinciden casi byte a byte**: 148 088 vs 148 139 (VBR, 51 B,
+0,03 %) y 99 937 vs 99 938 (CBR, **1 B**). El tamaño de salida es una propiedad del
 contenido + rate control de Opus, **no** de WORKERFS/ffmpeg.wasm.
 
 ## 7. Memoria (R5) — `measureUserAgentSpecificMemory` es la única prueba de «sin OOM»
@@ -185,10 +186,10 @@ contenido + rate control de Opus, **no** de WORKERFS/ffmpeg.wasm.
 
 ### 7.2 Frecuencia alcanzada y comportamiento de la API
 
-- Muestreo periódico **adaptativo**: arranque cada 2.000 ms; ×0,75 por éxito (mínimo
-  1.000 ms) y ×2 por rechazo (tope 30.000 ms) — converge a la máxima frecuencia que la
+- Muestreo periódico **adaptativo**: arranque cada 2 000 ms; ×0,75 por éxito (mínimo
+  1 000 ms) y ×2 por rechazo (tope 30 000 ms) — converge a la máxima frecuencia que la
   API tolere. El intervalo nominal final queda en `pageSampleIntervalMs`.
-- **Latencia real medida: 10.023 ms por llamada en reposo** (llamada manual
+- **Latencia real medida: 10 023 ms (10,02 s) por llamada en reposo** (llamada manual
   cronometrada tras una corrida); en la corrida de 1 h las llamadas bajo carga
   tardaron ~28 s. La frecuencia **alcanzada** fue, por tanto, ≈ **1 muestra cada
   10–18 s** (corridas cortas) y ≈ **1 cada 28 s** en la de 1 h — no la nominal de
@@ -203,30 +204,38 @@ contenido + rate control de Opus, **no** de WORKERFS/ffmpeg.wasm.
 
 | Run | UASM pico (B) | UASM pico (MB) | UASM final tras `exec` (B) | `pageFinalError` | Muestras UASM | Rechazos | Intervalo final | JS heap pico (MB)* |
 |---|---:|---:|---:|---|---:|---:|---:|---:|
-| `short-30s-cbr` | 5.196.162 | 4,96 | 5.196.162 | `null` | 1 | 0 | 1.500 ms | 5,29 |
-| `medium-10min-cbr` | 7.111.044 | 6,78 | 7.111.044 | `null` | 1 | 0 | 1.500 ms | 13,14 |
-| `large-2gb-cbr` | **29.415.197** | **28,05** | **29.415.197** | `null` | 2 | 0 | 1.125 ms | 24,07 |
+| `short-30s-cbr` | 5 196 162 | 4,96 | 5 196 162 | `null` | 1 | 0 | 1 500 ms | 5,29 |
+| `medium-10min-cbr` | 7 111 044 | 6,78 | 7 111 044 | `null` | 1 | 0 | 1 500 ms | 13,14 |
+| `large-2gb-cbr` | **29 415 197** | **28,05** | **29 415 197** | `null` | 2 | 0 | 1 125 ms | 24,07 |
 
 \* Cota inferior (§7.1), no se usa para el veredicto. Pico = máximo de las muestras
 periódicas y la final; en las tres corridas el pico lo aportó la medición final.
 
-### 7.4 Desglose por URL — corrida de 1 h (`large-2gb-cbr`, total 29.415.197 B)
+**Por qué `medium-10min-cbr` tiene 1 sola muestra UASM:** cada llamada a la API tarda
+10–28 s (§7.2) y el `exec` de esa corrida duró 12,73 s — solo cabe **una** medición
+(la final esperada tras `exec`). Por eso su pico (7 111 044 B) es honestamente un
+**límite inferior muestreado**, no el máximo exacto de la corrida (lo mismo aplica a
+`short-30s-cbr`, con `exec` de 231 ms). En `large-2gb-cbr` (exec 59,75 s) caben 2
+muestras. El umbral de «sin OOM» se apoya en el total medido, no en capturar cada pico
+intermedio (§7.5).
+
+### 7.4 Desglose por URL — corrida de 1 h (`large-2gb-cbr`, total 29 415 197 B)
 
 | URL / atribución | `scope` | `types` | Bytes | % del total |
 |---|---|---|---:|---:|
-| `http://localhost:5175/ffmpeg/worker.js` | `DedicatedWorkerGlobalScope` | JavaScript | **14.139.731** | 48,1 % |
-| `http://localhost:5175/` | `Window` | JavaScript | **13.886.023** | 47,2 % |
-| (sin url) | — | Shared | 1.326.595 | 4,5 % |
-| (sin url) | — | DOM | 62.848 | 0,2 % |
+| `http://localhost:5175/ffmpeg/worker.js` | `DedicatedWorkerGlobalScope` | JavaScript | **14 139 731** | 48,1 % |
+| `http://localhost:5175/` | `Window` | JavaScript | **13 886 023** | 47,2 % |
+| (sin url) | — | Shared | 1 326 595 | 4,5 % |
+| (sin url) | — | DOM | 62 848 | 0,2 % |
 | (sin url) | — | (entrada vacía) | 0 | 0 % |
-| **Total** | | | **29.415.197** | **100 %** |
+| **Total** | | | **29 415 197** | **100 %** |
 
 - **El worker de ffmpeg SÍ está incluido** (entrada `ffmpeg/worker.js`, alcance
   `DedicatedWorkerGlobalScope`) — no se omite. El **heap de WASM no aparece como URL
   `.wasm` aparte**: UASM atribuye el `ArrayBuffer` de `WebAssembly.Memory` al contexto
   que lo posee, o sea a esa misma entrada JavaScript del worker. El total cubre
   página + worker + DOM + memoria compartida del agente, post-GC.
-- Composición coherente con el flujo: la salida de 11.903.838 B reside **dos veces**
+- Composición coherente con el flujo: la salida de 11 903 838 B reside **dos veces**
   al final de la corrida (en MEMFS del worker → entrada `worker.js`; y como copia
   leída en la página para `decodeAudioData`/subida → entrada `Window`), más el motor
   (wasm + core + app) ≈ 5,6 MB. Descontando esas dos copias transitorias, el uso
@@ -251,7 +260,7 @@ muestras podría no capturarse — aunque el pico observado está a ×149 de la 
    2,15 GiB en 0,13 ms es imposible — no hay copia (y `writeFile` está prohibido).
 2. Log de la propia corrida: `Statistics: 2309948184 bytes read, 33 seeks` — ffmpeg
    leyó **bajo demanda, con seeks**, desde el FS montado.
-3. Duración de salida **3.600.022 ms** = 100 % del contenido: procesó el archivo
+3. Duración de salida **3 600 022 ms (3 600,022 s)** = 100 % del contenido: procesó el archivo
    entero sin residirlo.
 4. Desglose: la entrada mayor es de **14,14 MB** (worker) y el total de 28,05 MB es
    **1,2 %** del input. Ninguna entrada ni el total se acercan a 2,15 GiB.
@@ -265,8 +274,8 @@ Hechos:
 1. El comando literal con VBR produce **18,00 MB** para 1 h → **no** cumple ≤ 15 MB
    (§5).
 2. El VBR de Opus a target 24 kbps consume **~40 kbps de media** sobre este contenido
-   (148.088 B/30 s = 39,5 kbps) → desvío ×1,65. Es reproducible **nativamente**
-   (148.088 B) y el contenido tiene la responsabilidad: la cadena `sine → AAC` deja
+   (148 088 B/30 s = 39,5 kbps) → desvío ×1,65. Es reproducible **nativamente**
+   (148 088 B) y el contenido tiene la responsabilidad: la cadena `sine → AAC` deja
    crest 2,142 y un FLAC de 164 kbps (§3).
 3. **`-vbr off` (CBR) acota el tamaño de forma determinista**: 24 kbps × 3600 s / 8 =
    10,8 MB teóricos + contenedor ≈ **11,90–11,99 MB medidos en browser** (y 11,99 MB
@@ -289,7 +298,7 @@ arquitectura.
 
 ## 10. Notas de implementación (para la fase real)
 
-- **Logs:** ffmpeg.wasm imprime por debajo de `info`; 1 h genera **970.183 mensajes**
+- **Logs:** ffmpeg.wasm imprime por debajo de `info`; 1 h genera **970 183 mensajes**
   (la UI los descarta en bloques de 500 para no reflowear). En producción: filtrar por
   nivel (`-loglevel error`) o no encolar el debug.
 - **Core ESM + `classWorkerURL`:** `@ffmpeg/ffmpeg` crea su worker con
@@ -334,8 +343,8 @@ memoria por entrada: `peakPageMemoryMB`, `pageBreakdown`, `pageFinalBytes`,
 - **F1 (re-medición con el comando de producción):** las tres corridas de §4 se
   repitieron con `-vbr off` y publican bytes/s, bytes/h, `exec` en ms, duración, MIME
   y `exit`. Las corridas literales VBR se conservan separadas en §5 («por qué falla
-  el umbral»). §3 declara explícitamente que `large-2gb.mp4` (2.310.941.040 B,
-  3.600 s) **es un único fixture que cubre ambos umbrales** — no es una laguna.
+  el umbral»). §3 declara explícitamente que `large-2gb.mp4` (2 310 941 040 B,
+  3 600 s) **es un único fixture que cubre ambos umbrales** — no es una laguna.
 - **F2 (la memoria ahora prueba «sin OOM»):** medición UASM **final esperada tras
   `exec` y antes de `stopSampler`** (campos `pageFinal*` en `__SPIKE_RESULTS__`);
   muestreo periódico adaptativo con registro de rechazos (`pageRejected`,
@@ -345,8 +354,8 @@ memoria por entrada: `peakPageMemoryMB`, `pageBreakdown`, `pageFinalBytes`,
   entrada del worker (§7.4); UASM etiquetada como único soporte de «sin OOM» y
   `usedJSHeapSize` como cota inferior no usable (§7.1); saneidad de 2,15 GiB vs
   28,05 MB con evidencia de streaming (§7.6). Bug encontrado y corregido en la ronda:
-  la espera de la UASM final contaminaba `execMs` (marcaba 12.508 ms en vez de
-  231 ms) → reloj bloqueado tras `exec`. Red de seguridad de 60 s en la medición
+  la espera de la UASM final contaminaba `execMs` (marcaba 12 508 ms (12,51 s) en
+  vez de 231 ms) → reloj bloqueado tras `exec`. Red de seguridad de 60 s en la medición
   final (no saltó en ninguna corrida).
 - **F3 (veredicto):** reescrito como **GO** sin condicionales, justificado por la
   tabla CBR (§4) y la medición de memoria (§7).
