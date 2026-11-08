@@ -55,6 +55,34 @@ cross-origin` en `server` **y** `preview` (necesarios para
 6. **«Fallback wasm (sentence-01)»** — `device: "wasm"`, `dtype: q8`
    (ficheros `_quantized`); no cuenta para el umbral de tiempo.
 
+### Ronda 2 (F1–F3)
+
+7. **«Sonda de adaptadores (F1)»** — enumera `requestAdapter()` sin opciones,
+   con `low-power` y con `high-performance`; registra `adapter.info` +
+   límites, prueba un `requestDevice()` real por preferencia (y destruye el
+   device) y decide si hay una GPU **no-NVIDIA** seleccionable para el
+   botón 10. Deja `adapters` en el resultado.
+8. **«Timestamps de segmento (F2)»** — frases 01/03/08 y los 10 min con
+   `return_timestamps: true`: nº de segmentos, cobertura vs audio,
+   monoticidad, distribución de duraciones (mediana/p95), WER vs referencia
+   y vs la corrida sin timestamps, y fronteras contra los silencios reales
+   del WAV (±0.5 s / ±1.0 s). Deja `segmentSentences` y `segmentReport`.
+9. **«Chunking manual (F3)»** — ventanas de 30 s con solape de 5 s (la
+   última alineada al final), transcripción independiente con timestamps de
+   segmento (offset conocido si F2 fallara) y fusión por solape de texto
+   normalizado (exacto k ≥ 4, luego fuzzy ≤15 %); devuelve WER + S/D/I contra
+   la corrida baseline de 10 min. Deja `manualChunk`.
+10. **«10 min en adaptador alternativo (F1)»** — solo tiene sentido si la
+    sonda encontró una GPU no-NVIDIA: fuerza `navigator.gpu.requestAdapter`,
+    limpia `env.webgpu.device`, recarga el pipeline y repite los 10 min sin
+    timestamps. Si no la hay, deja un resultado `ERROR` con el motivo
+    (evidencia machine-readable). Deja `forcedAdapter`.
+
+La «Cargar en caliente» de la Ronda 2 instala además hooks de medición
+(`loadBreakdown`): Cache API, `fetch`, estáticas de `AutoConfig`/
+`AutoTokenizer`/`AutoModelForSpeechSeq2Seq`, `InferenceSession.create`,
+`WebAssembly.instantiate*` y `requestDevice` — todo restaurado al terminar.
+
 Cada ejecución muestra su tiempo en vivo, su medición UASM final (con desglose
 por URL) y un marcador `RUN_DONE: …` en la página.
 

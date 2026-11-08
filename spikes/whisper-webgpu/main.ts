@@ -15,7 +15,14 @@
  *
  * Resultados: `window.__WHISPER_RESULTS__` (JSON) + <pre id="results">.
  */
-import { env, LogLevel, pipeline } from "@huggingface/transformers";
+import {
+  AutoConfig,
+  AutoModelForSpeechSeq2Seq,
+  AutoTokenizer,
+  env,
+  LogLevel,
+  pipeline,
+} from "@huggingface/transformers";
 import type {
   AutomaticSpeechRecognitionOutput,
   AutomaticSpeechRecognitionPipeline,
@@ -23,6 +30,9 @@ import type {
   PretrainedModelOptions,
   ProgressInfo,
 } from "@huggingface/transformers";
+// Ronda 2 (F1/F4): mismo módulo que usa el bundle de transformers.js, así que
+// parchear `InferenceSession.create`/`env.webgpu` afecta también a esa copia.
+import { env as ortEnv, InferenceSession } from "onnxruntime-web/webgpu";
 import sentencesFixture from "./fixtures/sentences.json";
 import scriptText from "./fixtures/script.txt?raw";
 
@@ -75,7 +85,18 @@ const LANG_OPTS = { language: "en", task: "transcribe" } as const;
 // ---------------------------------------------------------------------------
 
 type Device = "webgpu" | "wasm";
-type RunKind = "load-cold" | "load-warm" | "sentences-20" | "long-10min" | "wasm-fallback";
+type RunKind =
+  | "load-cold"
+  | "load-warm"
+  | "sentences-20"
+  | "long-10min"
+  | "wasm-fallback"
+  // Ronda 2 (F1–F3): sonda de adaptadores, 10 min en adaptador alternativo,
+  // timestamps de segmento y chunking manual.
+  | "adapters"
+  | "long-10min-altgpu"
+  | "segments"
+  | "manual-chunk";
 type Outcome = "RUNNING" | "OK" | "ERROR" | "INTERRUPTED";
 
 interface EnvInfo {
@@ -243,6 +264,188 @@ interface SliceDiagnostic {
   text: string;
 }
 
+// ---------------------------------------------------------------------------
+// Ronda 2 (F1–F4): adaptadores, timestamps de segmento, chunking manual y
+// desglose de la carga en caliente.
+// ---------------------------------------------------------------------------
+
+/** Identidad de un adaptador WebGPU según `adapter.info` (F1). */
+interface AdapterSummary {
+  vendor: string | null;
+  architecture: string | null;
+  device: string | null;
+  description: string | null;
+  features: string[];
+  maxBufferSize: number | null;
+  maxStorageBufferBindingSize: number | null;
+  maxComputeWorkgroupStorageSize: number | null;
+}
+
+type AdapterPref = "default" | "low-power" | "high-performance";
+
+/** Resultado de `requestAdapter()` para una preferencia de energía concreta. */
+interface AdapterChoice {
+  pref: AdapterPref;
+  ok: boolean;
+  adapter: AdapterSummary | null;
+  /** ¿Misma GPU que la elección «default»? (vendor+architecture+device+description) */
+  sameAsDefault: boolean | null;
+  /** `adapter.requestDevice()` real (mismo camino que usa ORT) + duración. */
+  deviceRequestOk: boolean | null;
+  deviceRequestMs: number | null;
+  error: string | null;
+}
+
+interface AdapterProbeReport {
+  choices: AdapterChoice[];
+  /** GPUs distintas vistas (clave vendor/architecture/device/description). */
+  distinctGpus: number;
+  nonNvidiaPrefs: AdapterPref[];
+  /** Mecanismo de selección observable (no existe script para chrome://gpu). */
+  selectionMechanism: string;
+  /** Adaptador forzado para la corrida `long-10min-altgpu` (si la hubo). */
+  forcedPref: AdapterPref | null;
+}
+
+/** Segmento de nivel frase devuelto por `return_timestamps: true` (F2). */
+interface SegmentInfo {
+  start: number;
+  end: number;
+  text: string;
+}
+
+/**
+ * Fronteras de segmento frente a los silencios reales del WAV: sirve para
+ * juzgar si un corte de clip cae a ±0.5–1 s del lugar correcto.
+ */
+interface SilenceReport {
+  frameMs: number;
+  thresholdRms: number;
+  minSpanMs: number;
+  spanCount: number;
+  spans: Array<{ startS: number; endS: number }>;
+  /** Fronteras interiores evaluadas (fin del segmento i, i = 1..n-1). */
+  boundaryCount: number;
+  /** % de fronteras dentro de ±0.5 s / ±1.0 s de un silencio (o dentro). */
+  within05Pct: number;
+  within10Pct: number;
+  /** % de silencios ≥ minSpanMs con alguna frontera dentro de ±0.5/±1.0 s. */
+  recall05Pct: number;
+  recall10Pct: number;
+}
+
+/** Análisis de una corrida con `return_timestamps: true` (F2). */
+interface SegmentRunReport {
+  ok: boolean;
+  error: string | null;
+  execMs: number;
+  audioMs: number;
+  segmentCount: number;
+  /** Σ(end − start) en ms y su ratio frente a la duración del audio. */
+  coveredMs: number;
+  coverageRatio: number;
+  monotonic: boolean;
+  nonMonotonicCount: number;
+  maxBackwardMs: number | null;
+  invalidRanges: number;
+  outOfRange: number;
+  minDurationMs: number | null;
+  medianDurationMs: number | null;
+  p95DurationMs: number | null;
+  maxDurationMs: number | null;
+  text: string;
+  /** WER del texto de segmentos contra la referencia (largo) o null. */
+  werRef: WerPair | null;
+  /** WER del texto de segmentos contra la MISMA corrida sin timestamps. */
+  werVsNoTimestamp: WerPair | null;
+  silence: SilenceReport | null;
+  sample: SegmentInfo[];
+  spreadSample: SegmentInfo[];
+  segments: SegmentInfo[];
+}
+
+/** Ventana del chunking manual (F3). */
+interface ManualWindowReport {
+  index: number;
+  startS: number;
+  endS: number;
+  execMs: number;
+  wordsIn: number;
+  /** Palabras de solape eliminadas al fusionar con la ventana anterior. */
+  overlapWords: number;
+  /** true si el solape exacto/fuzzy no se encontró (riesgo de duplicado). */
+  overlapMiss: boolean;
+  overlapFuzzy: boolean;
+  wordsAfter: number;
+  segmentCount: number;
+  /** Segmentos de esta ventana con offsets absolutos (s) tras ajustar. */
+  segments: SegmentInfo[];
+}
+
+interface WerOps {
+  s: number;
+  d: number;
+  i: number;
+}
+
+interface ManualChunkReport {
+  windowS: number;
+  hopS: number;
+  windowCount: number;
+  usedSegmentTimestamps: boolean;
+  windows: ManualWindowReport[];
+  /** Σ de exec de ventanas (sin carga de audio ni merge). */
+  totalExecMs: number;
+  /** Wall completo de la corrida (carga WAV + ventanas + merge + WER). */
+  totalWallMs: number;
+  overlapHits: number;
+  overlapFuzzyHits: number;
+  overlapMisses: number;
+  text: string;
+  wer: WerPair;
+  /** S/D/I del chunking manual contra la referencia (1431 palabras). */
+  ops: WerOps;
+  /** S/D/I de la corrida `long-10min` sin chunking (baseline 14.19 %). */
+  baselineOps: WerOps | null;
+  deletionsDelta: number | null;
+}
+
+/**
+ * Desglose de `pipeline()` (F4). Los componentes se miden con
+ * `performance.mark`/`measure` + hooks sobre Cache API, `fetch`,
+ * `AutoTokenizer`/`AutoConfig`, `InferenceSession.create` y `requestDevice`.
+ * `tokenizerWallMs` y `modelWallMs` se solapan (Promise.all en pipeline()).
+ */
+interface LoadBreakdown {
+  totalMs: number;
+  cacheReadSpanMs: number;
+  cacheReadSumMs: number;
+  cacheReadCount: number;
+  cacheReadBytes: number;
+  networkFetchCount: number;
+  networkFetchSumMs: number;
+  metadataFetchSumMs: number;
+  configWallMs: number;
+  tokenizerWallMs: number;
+  tokenizerCacheMs: number;
+  tokenizerParseMs: number;
+  modelWallMs: number;
+  modelCacheMs: number;
+  modelOtherMs: number;
+  /** Compilación/instantiación de wasm (ORT runtime) ⊂ modelOtherMs. */
+  wasmCompileCount: number;
+  wasmCompileMs: number;
+  ortSessionCount: number;
+  ortSessionMs: number;
+  webgpuDeviceCount: number;
+  webgpuDeviceMs: number;
+  /** ortSessionMs − webgpuDeviceMs: grafo + compilación de pipelines WebGPU. */
+  webgpuPipelineMs: number;
+  /** total − (caché + parseo tokenizer + modelo + ORT + red); negativo = solapes. */
+  residualMs: number;
+  marks: string[];
+}
+
 interface WhisperResult {
   id: string;
   run: RunKind;
@@ -280,6 +483,20 @@ interface WhisperResult {
   /** Diagnóstico D: transcripción aislada de las regiones perdidas (ver RESULT.md). */
   sliceDiagnostics: SliceDiagnostic[] | null;
   sentenceReports: WerSentence[] | null;
+  /** Ronda 2 — F1: identidad del adaptador usado en esta corrida. */
+  adapter: AdapterSummary | null;
+  /** Ronda 2 — F1: resultado de enumerar `requestAdapter()` por preferencia. */
+  adapters: AdapterProbeReport | null;
+  /** Ronda 2 — F1: adaptador forzado (corrida `long-10min-altgpu`). */
+  forcedAdapter: AdapterSummary | null;
+  /** Ronda 2 — F2: corrida con `return_timestamps: true` (10 min). */
+  segmentReport: SegmentRunReport | null;
+  /** Ronda 2 — F2: frases 01/03/08 con `return_timestamps: true`. */
+  segmentSentences: SegmentRunReport[] | null;
+  /** Ronda 2 — F3: chunking manual 30 s / solape 5 s con fusión LCP. */
+  manualChunk: ManualChunkReport | null;
+  /** Ronda 2 — F4: desglose de `pipeline()` (caché, ORT, WebGPU, tokenizer). */
+  loadBreakdown: LoadBreakdown | null;
   peakJsHeapMB: number;
   peakPageMemoryMB: number | null;
   pageBreakdown: PageBreakdownEntry[];
@@ -357,6 +574,14 @@ let logPushCount = 0;
 let lastLogRender = 0;
 let logRenderTimer: number | null = null;
 let audioCtx: OfflineAudioContext | null = null;
+
+// Ronda 2 (F1): adaptador activo y preferencia forzada por `forceAdapter()`.
+let activeAdapter: AdapterSummary | null = null;
+let forcedAdapterPref: AdapterPref | null = null;
+/** Prototipo de `GPUAdapter` capturado en la sonda inicial (para parchearlo). */
+let gpuAdapterProto: object | null = null;
+/** `navigator.gpu.requestAdapter` original, para restaurar tras forzar. */
+let originalRequestAdapter: GPU["requestAdapter"] | null = null;
 
 const wavUrls: Record<string, string> = import.meta.glob("/fixtures/*.wav", {
   eager: true,
@@ -518,6 +743,14 @@ function restore(): void {
       item.downloads ??= null;
       item.progressFiles ??= null;
       item.pageMemoryError ??= null;
+      // Ronda 2: campos ausentes en resultados guardados por versiones previas.
+      item.adapter ??= null;
+      item.adapters ??= null;
+      item.forcedAdapter ??= null;
+      item.segmentReport ??= null;
+      item.segmentSentences ??= null;
+      item.manualChunk ??= null;
+      item.loadBreakdown ??= null;
       results.push(item);
     }
     if (recovered > 0) {
@@ -587,6 +820,9 @@ async function probeWebGpu(): Promise<WebGpuInfo> {
     out.maxBufferSize = adapter.limits.maxBufferSize;
     out.maxStorageBufferBindingSize = adapter.limits.maxStorageBufferBindingSize;
     out.maxComputeWorkgroupStorageSize = adapter.limits.maxComputeWorkgroupStorageSize;
+    // Ronda 2 (F1): guardar identidad + prototipo (para forzar adaptador luego).
+    activeAdapter = adapterSummary(adapter);
+    gpuAdapterProto = Object.getPrototypeOf(adapter);
   } catch (e) {
     out.error = msg(e);
   }
@@ -1296,6 +1532,13 @@ function makeResult(run: RunKind, device: Device): WhisperResult {
     altCacheBytesAfter: null,
     sliceDiagnostics: null,
     sentenceReports: null,
+    adapter: activeAdapter,
+    adapters: null,
+    forcedAdapter: null,
+    segmentReport: null,
+    segmentSentences: null,
+    manualChunk: null,
+    loadBreakdown: null,
     peakJsHeapMB: 0,
     peakPageMemoryMB: null,
     pageBreakdown: [],
@@ -1351,6 +1594,8 @@ async function loadModel(clearCacheFirst: boolean): Promise<void> {
   const result = makeResult(run, "webgpu");
   await beginRun(result);
   const wallStart = performance.now();
+  // Ronda 2 (F4): hooks de medición alrededor de `pipeline()`.
+  let hooks: LoadHooks | null = null;
   try {
     result.cacheNamesBefore = await caches.keys();
     if (clearCacheFirst) {
@@ -1380,9 +1625,14 @@ async function loadModel(clearCacheFirst: boolean): Promise<void> {
       dtype: WEBGPU_DTYPE,
       progress_callback: makeProgressCollector(progressFiles, progressStats),
     };
+    hooks = installLoadHooks();
+    performance.mark("spike:load:start");
     const t0 = performance.now();
     const pipe = await pipeline("automatic-speech-recognition", MODEL, options);
     const loadMs = performance.now() - t0;
+    performance.mark("spike:load:end");
+    result.loadBreakdown = uninstallLoadHooks(hooks, loadMs);
+    hooks = null;
     transcriber = pipe;
     result.loadMs = loadMs;
     result.progressFiles = [...progressFiles.values()];
@@ -1412,6 +1662,7 @@ async function loadModel(clearCacheFirst: boolean): Promise<void> {
     pushLog(`ERROR en ${run}: ${result.error}`);
     setStatus(`${run}: ERROR — ${result.error}`);
   } finally {
+    if (hooks !== null) discardLoadHooks(hooks);
     result.wallMs = Math.round(performance.now() - wallStart);
     await endRun(result);
     if (result.outcome === "OK") setStatus(`${run}: OK en ${Math.round(result.loadMs ?? 0)} ms`);
@@ -1853,6 +2104,1247 @@ async function clearCacheAction(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Ronda 2 (F1): sonda de adaptadores WebGPU y selección de GPU alternativa
+// ---------------------------------------------------------------------------
+
+function adapterSummary(adapter: GPUAdapter): AdapterSummary {
+  const info = adapter.info;
+  const features: string[] = [];
+  for (const f of adapter.features) features.push(f);
+  features.sort();
+  return {
+    vendor: info.vendor || null,
+    architecture: info.architecture || null,
+    device: info.device || null,
+    description: info.description || null,
+    features,
+    maxBufferSize: adapter.limits.maxBufferSize,
+    maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+    maxComputeWorkgroupStorageSize: adapter.limits.maxComputeWorkgroupStorageSize,
+  };
+}
+
+function gpuKey(s: AdapterSummary): string {
+  return [s.vendor, s.architecture, s.device, s.description].map((x) => x ?? "").join("|");
+}
+
+function sameGpu(a: AdapterSummary | null, b: AdapterSummary | null): boolean | null {
+  if (a === null || b === null) return null;
+  return gpuKey(a) === gpuKey(b);
+}
+
+/** Clasifica la GPU: ¿es del fabricante objetivo (NVIDIA) o no? */
+function gpuClass(s: AdapterSummary): "nvidia" | "other" | "unknown" {
+  const hay = `${s.vendor ?? ""} ${s.architecture ?? ""} ${s.device ?? ""} ${s.description ?? ""}`
+    .toLowerCase()
+    .trim();
+  if (hay.replace(/\s+/g, "") === "") return "unknown";
+  return /nvidia|geforce|quadro|tesla/.test(hay) ? "nvidia" : "other";
+}
+
+async function requestAdapterWithPref(pref: AdapterPref): Promise<GPUAdapter | null> {
+  if (!("gpu" in navigator) || navigator.gpu === undefined) return null;
+  const opts: GPURequestAdapterOptions | undefined =
+    pref === "default" ? undefined : { powerPreference: pref };
+  return await navigator.gpu.requestAdapter(opts);
+}
+
+/**
+ * F1 — enumera `requestAdapter()` sin opciones y con `low-power` /
+ * `high-performance`, registra `adapter.info` + límites y prueba
+ * `requestDevice()` real (el mismo camino que usa ORT) para cada preferencia.
+ */
+async function runAdapterProbe(): Promise<void> {
+  if (running) {
+    setStatus("ya hay una ejecución en curso");
+    return;
+  }
+  const result = makeResult("adapters", "webgpu");
+  await beginRun(result);
+  const wallStart = performance.now();
+  try {
+    if (!("gpu" in navigator) || navigator.gpu === undefined) {
+      throw new Error("navigator.gpu no disponible en esta pestaña");
+    }
+    const prefs: AdapterPref[] = ["default", "low-power", "high-performance"];
+    const choices: AdapterChoice[] = [];
+    let defaultSummary: AdapterSummary | null = null;
+    for (const pref of prefs) {
+      const choice: AdapterChoice = {
+        pref,
+        ok: false,
+        adapter: null,
+        sameAsDefault: null,
+        deviceRequestOk: null,
+        deviceRequestMs: null,
+        error: null,
+      };
+      try {
+        const adapter = await requestAdapterWithPref(pref);
+        if (adapter === null) throw new Error("requestAdapter() devolvió null");
+        const summary = adapterSummary(adapter);
+        choice.ok = true;
+        choice.adapter = summary;
+        if (pref === "default") defaultSummary = summary;
+        // requestDevice real + destrucción del device (evita fugas de memoria).
+        const t0 = performance.now();
+        try {
+          const device = await adapter.requestDevice();
+          choice.deviceRequestOk = true;
+          choice.deviceRequestMs = performance.now() - t0;
+          device.destroy();
+        } catch (de) {
+          choice.deviceRequestOk = false;
+          choice.deviceRequestMs = performance.now() - t0;
+          choice.error = `requestDevice: ${msg(de)}`;
+        }
+      } catch (e) {
+        choice.error = msg(e);
+      }
+      choices.push(choice);
+    }
+    for (const c of choices) {
+      c.sameAsDefault = sameGpu(c.adapter, defaultSummary);
+      if (c.adapter !== null) {
+        pushLog(
+          `adaptador ${c.pref}: ${c.adapter.vendor ?? "?"}/${c.adapter.architecture ?? "?"} — ` +
+            `${c.adapter.description ?? "sin descripción"} · requestDevice ${
+              c.deviceRequestOk === true ? `OK ${Math.round(c.deviceRequestMs ?? 0)} ms` : `FALLA (${c.error ?? "?"})`
+            }`,
+        );
+      } else {
+        pushLog(`adaptador ${c.pref}: NO DISPONIBLE — ${c.error ?? "sin error"}`);
+      }
+    }
+    const keys = new Set<string>();
+    for (const c of choices) if (c.adapter !== null) keys.add(gpuKey(c.adapter));
+    const nonNvidiaPrefs = choices
+      .filter((c) => c.adapter !== null && gpuClass(c.adapter) === "other")
+      .map((c) => c.pref);
+    // Preferencia que devuelve una GPU distinta de la «default» y no-NVIDIA.
+    let forcedPref: AdapterPref | null = null;
+    for (const c of choices) {
+      if (c.pref !== "default" && c.adapter !== null && gpuClass(c.adapter) === "other" && c.sameAsDefault === false) {
+        forcedPref = c.pref;
+        break;
+      }
+    }
+    if (forcedPref === null) {
+      const def = choices.find((c) => c.pref === "default");
+      if (def !== undefined && def.adapter !== null && gpuClass(def.adapter) === "other") {
+        forcedPref = "default";
+      }
+    }
+    forcedAdapterPref = forcedPref;
+    const defChoice = choices.find((c) => c.pref === "default");
+    if (defChoice !== undefined && defChoice.adapter !== null) activeAdapter = defChoice.adapter;
+    const report: AdapterProbeReport = {
+      choices,
+      distinctGpus: keys.size,
+      nonNvidiaPrefs,
+      selectionMechanism:
+        "no existe API de selección de GPU (chrome://gpu no es scriptable); la única palanca observable es " +
+        `requestAdapter({powerPreference}) — ${keys.size} GPU distinta(s) vista(s) en ${
+          choices.length
+        } preferencia(s)`,
+      forcedPref,
+    };
+    result.adapters = report;
+    result.outcome = "OK";
+    pushLog(
+      `sonda de adaptadores: ${keys.size} GPU distinta(s) · no-NVIDIA en preferencias [${
+        nonNvidiaPrefs.join(", ") || "ninguna"
+      }] · forzable=${forcedPref ?? "NO"} · ${report.selectionMechanism}`,
+    );
+    setStatus(
+      forcedPref !== null
+        ? `adaptadores: hay GPU no-NVIDIA seleccionable (${forcedPref}) — corre «10 min en GPU alt»`
+        : `adaptadores: todas las preferencias devuelven la misma GPU (${keys.size} distinta(s)) — sin alt GPU`,
+    );
+  } catch (e) {
+    result.outcome = "ERROR";
+    result.error = msg(e);
+    pushLog(`ERROR en adapters: ${result.error}`);
+    setStatus(`adapters: ERROR — ${result.error}`);
+  } finally {
+    result.wallMs = Math.round(performance.now() - wallStart);
+    await endRun(result);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ronda 2 (F1): forzar un adaptador no-NVIDIA para la corrida de 10 min
+// ---------------------------------------------------------------------------
+
+/** Instancia de `GPUAdapter` forzada (se mantiene para la recarga del pipeline). */
+let forcedAdapterInstance: GPUAdapter | null = null;
+
+/**
+ * Parchea `navigator.gpu.requestAdapter` para que cualquier consumidor (ORT,
+ * transformers.js) reciba SIEMPRE el adaptador de la preferencia pedida, y
+ * limpia `env.webgpu.device` (reutilizaría el device antiguo) fijando
+ * `env.webgpu.adapter`. Solo tiene efecto sobre sesiones creadas después.
+ */
+async function forceAdapter(pref: AdapterPref): Promise<GPUAdapter> {
+  const adapter = await requestAdapterWithPref(pref);
+  if (adapter === null) throw new Error(`requestAdapter(${pref}) devolvió null`);
+  if (originalRequestAdapter === null) {
+    originalRequestAdapter = navigator.gpu.requestAdapter.bind(navigator.gpu);
+  }
+  const forced = adapter;
+  navigator.gpu.requestAdapter = (async (): Promise<GPUAdapter> => forced) as GPU["requestAdapter"];
+  if (ortEnv.webgpu !== undefined) {
+    // `device` tipado raro en ort-common (TryGetGlobalType); se pasa por unknown.
+    const w = ortEnv.webgpu as unknown as { adapter?: GPUAdapter; device?: GPUDevice };
+    delete w.device; // el device previo (NVIDIA) no debe reutilizarse
+    w.adapter = forced;
+  }
+  forcedAdapterInstance = forced;
+  return adapter;
+}
+
+/** Restaura `navigator.gpu.requestAdapter`. `env.webgpu.adapter` queda con el
+ * adaptador forzado a propósito: el pipeline ya vive en esa GPU y las próximas
+ * sesiones deben seguir en la misma (documentado en RESULT.md). */
+function restoreAdapter(): void {
+  if (originalRequestAdapter !== null) {
+    navigator.gpu.requestAdapter = originalRequestAdapter;
+    originalRequestAdapter = null;
+  }
+}
+
+/**
+ * F1 — re-corre los 10 min SIN timestamps sobre el adaptador no-NVIDIA que
+ * haya expuesto la sonda. Requiere recargar el pipeline: las sesiones ORT
+ * existentes siguen atadas al device anterior.
+ */
+async function runLongAltAdapter(): Promise<void> {
+  if (transcriber === null) {
+    setStatus("carga el modelo primero (botón «Cargar modelo»)");
+    return;
+  }
+  if (running) {
+    setStatus("ya hay una ejecución en curso");
+    return;
+  }
+  const result = makeResult("long-10min-altgpu", "webgpu");
+  await beginRun(result);
+  const wallStart = performance.now();
+  try {
+    const pref = forcedAdapterPref;
+    if (pref === null) {
+      throw new Error(
+        "la sonda no encontró ninguna GPU no-NVIDIA seleccionable (todas las preferencias devuelven la misma GPU)",
+      );
+    }
+    const forced = await forceAdapter(pref);
+    const summary = adapterSummary(forced);
+    result.forcedAdapter = summary;
+    pushLog(`adaptador forzado (${pref}): ${summary.vendor}/${summary.architecture} — ${summary.description ?? ""}`);
+
+    // Recarga del pipeline para que ORT cree sus sesiones con el device forzado.
+    if (transcriber !== null) {
+      await transcriber.dispose();
+      transcriber = null;
+      pushLog("pipeline dispuesto antes de recargar sobre el adaptador forzado");
+    }
+    const progressFiles = new Map<string, ProgressFile>();
+    const progressStats: ProgressStats = { totalBytes: 0, loadedBytes: 0 };
+    const tReload = performance.now();
+    const pipe = await pipeline("automatic-speech-recognition", MODEL, {
+      revision: REVISION,
+      device: "webgpu",
+      dtype: WEBGPU_DTYPE,
+      progress_callback: makeProgressCollector(progressFiles, progressStats),
+    });
+    transcriber = pipe;
+    result.altLoadMs = performance.now() - tReload;
+    result.progressFiles = [...progressFiles.values()];
+    result.progressTotalBytes = progressStats.totalBytes;
+    result.progressLoadedBytes = progressStats.loadedBytes;
+    activeAdapter = summary;
+    pushLog(`pipeline recargado en ${Math.round(result.altLoadMs)} ms sobre el adaptador forzado`);
+
+    // 10 min SIN timestamps (mismo protocolo que long-10min B).
+    const audio = await loadAudio16k(wavUrlFor("long-10min.wav"));
+    result.audioFile = "long-10min.wav";
+    result.audioBytes = audio.bytes;
+    result.audioDurationMs = audio.durationMs;
+    const t0 = performance.now();
+    const out = await pipe(audio.data, {
+      chunk_length_s: 30,
+      stride_length_s: 5,
+      ...LANG_OPTS,
+    });
+    const execMs = performance.now() - t0;
+    result.execMs = execMs;
+    result.rtf = audio.durationMs > 0 ? execMs / audio.durationMs : null;
+    result.text = out.text;
+    const pair = computeWer(LONG_REF, out.text);
+    result.wer = { ...pair, perSentence: null };
+    result.outcome = "OK";
+    pushLog(
+      `altgpu 10min (${pref} ${summary.vendor}/${summary.architecture}): exec ${Math.round(execMs)} ms · RTF ${
+        result.rtf?.toFixed(3) ?? "—"
+      } · WER ${(pair.wer * 100).toFixed(2)}% · ${pair.errors}/${pair.refWords} errores`,
+    );
+    setStatus(
+      `long-10min-altgpu: OK — exec ${Math.round(execMs)} ms · RTF ${result.rtf?.toFixed(3) ?? "—"}`,
+    );
+  } catch (e) {
+    result.outcome = "ERROR";
+    result.error = msg(e);
+    pushLog(`ERROR en long-10min-altgpu: ${result.error}`);
+    setStatus(`long-10min-altgpu: ERROR — ${result.error}`);
+  } finally {
+    restoreAdapter();
+    result.wallMs = Math.round(performance.now() - wallStart);
+    await endRun(result);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ronda 2 (F2): timestamps de segmento (`return_timestamps: true`)
+// ---------------------------------------------------------------------------
+
+function failedSegmentReport(e: unknown, execMs: number, audioMs: number): SegmentRunReport {
+  return {
+    ok: false,
+    error: msg(e),
+    execMs,
+    audioMs,
+    segmentCount: 0,
+    coveredMs: 0,
+    coverageRatio: 0,
+    monotonic: true,
+    nonMonotonicCount: 0,
+    maxBackwardMs: null,
+    invalidRanges: 0,
+    outOfRange: 0,
+    minDurationMs: null,
+    medianDurationMs: null,
+    p95DurationMs: null,
+    maxDurationMs: null,
+    text: "",
+    werRef: null,
+    werVsNoTimestamp: null,
+    silence: null,
+    sample: [],
+    spreadSample: [],
+    segments: [],
+  };
+}
+
+function analyzeSegments(
+  out: AutomaticSpeechRecognitionOutput,
+  execMs: number,
+  audioMs: number,
+  refText: string | null,
+  plainText: string | null,
+  audioData: Float32Array | null,
+): SegmentRunReport {
+  const chunks = out.chunks ?? [];
+  const segments: SegmentInfo[] = [];
+  let invalidRanges = 0;
+  for (const c of chunks) {
+    const s = c.timestamp[0];
+    const e = c.timestamp[1];
+    if (!Number.isFinite(s) || !Number.isFinite(e) || e < s) {
+      invalidRanges++;
+      continue;
+    }
+    segments.push({ start: s, end: e, text: c.text });
+  }
+  const audioS = audioMs / 1000;
+  let outOfRange = 0;
+  let coveredMs = 0;
+  let monotonic = true;
+  let nonMonotonicCount = 0;
+  let maxBackwardMs: number | null = null;
+  const durations: number[] = [];
+  let prevStart = Number.NEGATIVE_INFINITY;
+  for (const seg of segments) {
+    const durMs = (seg.end - seg.start) * 1000;
+    durations.push(durMs);
+    coveredMs += durMs;
+    if (seg.start < -0.1 || seg.end > audioS + 0.1) outOfRange++;
+    if (seg.start < prevStart) {
+      monotonic = false;
+      nonMonotonicCount++;
+      const back = (prevStart - seg.start) * 1000;
+      if (maxBackwardMs === null || back > maxBackwardMs) maxBackwardMs = back;
+    }
+    prevStart = Math.max(prevStart, seg.start);
+  }
+  durations.sort((a, b) => a - b);
+  const n = durations.length;
+  const minDurationMs = n > 0 ? durations[0] ?? null : null;
+  const maxDurationMs = n > 0 ? durations[n - 1] ?? null : null;
+  let medianDurationMs: number | null = null;
+  if (n > 0) {
+    medianDurationMs =
+      n % 2 === 1
+        ? durations[Math.floor(n / 2)] ?? null
+        : ((durations[n / 2 - 1] ?? 0) + (durations[n / 2] ?? 0)) / 2;
+  }
+  const p95Idx = n > 0 ? Math.min(n - 1, Math.max(0, Math.ceil(0.95 * n) - 1)) : -1;
+  const p95DurationMs = p95Idx >= 0 ? durations[p95Idx] ?? null : null;
+
+  // Muestra «spread»: 5 segmentos repartidos por todo el audio.
+  const spreadIdx = new Set<number>();
+  if (n > 0) {
+    for (let k = 0; k < 5; k++) spreadIdx.add(Math.round((k * (n - 1)) / 4));
+  }
+  const spreadSample = [...spreadIdx]
+    .sort((a, b) => a - b)
+    .map((i) => segments[i])
+    .filter((s): s is SegmentInfo => s !== undefined);
+
+  return {
+    ok: true,
+    error: null,
+    execMs,
+    audioMs,
+    segmentCount: segments.length,
+    coveredMs: Math.round(coveredMs),
+    coverageRatio: audioMs > 0 ? coveredMs / audioMs : 0,
+    monotonic,
+    nonMonotonicCount,
+    maxBackwardMs: maxBackwardMs !== null ? Math.round(maxBackwardMs) : null,
+    invalidRanges,
+    outOfRange,
+    minDurationMs: minDurationMs !== null ? Math.round(minDurationMs) : null,
+    medianDurationMs: medianDurationMs !== null ? Math.round(medianDurationMs) : null,
+    p95DurationMs: p95DurationMs !== null ? Math.round(p95DurationMs) : null,
+    maxDurationMs: maxDurationMs !== null ? Math.round(maxDurationMs) : null,
+    text: out.text,
+    werRef: refText !== null ? computeWer(refText, out.text) : null,
+    werVsNoTimestamp: plainText !== null ? computeWer(plainText, out.text) : null,
+    silence: audioData !== null ? analyzeSilences(audioData, segments) : null,
+    sample: segments.slice(0, 10),
+    spreadSample,
+    segments,
+  };
+}
+
+/**
+ * Fronteras de segmento vs silencios reales del WAV: frames de 100 ms,
+ * umbral `max(0.005, 0.25 × mediana RMS)`, tramos ≥ 400 ms. Sirve para juzgar
+ * si un corte de clip cae a ±0.5–1 s del lugar correcto.
+ */
+function analyzeSilences(data: Float32Array, segments: SegmentInfo[]): SilenceReport {
+  const frameMs = 100;
+  const frameLen = Math.round((SAMPLE_RATE * frameMs) / 1000);
+  const frameCount = Math.floor(data.length / frameLen);
+  const rms: number[] = [];
+  for (let i = 0; i < frameCount; i++) {
+    let sum = 0;
+    const base = i * frameLen;
+    for (let j = 0; j < frameLen; j++) {
+      const v = data[base + j] ?? 0;
+      sum += v * v;
+    }
+    rms.push(Math.sqrt(sum / frameLen));
+  }
+  const sorted = [...rms].sort((a, b) => a - b);
+  const median = sorted.length > 0 ? sorted[Math.floor(sorted.length / 2)] ?? 0 : 0;
+  const thresholdRms = Math.max(0.005, 0.25 * median);
+  const minSpanMs = 400;
+  const minFrames = Math.max(1, Math.ceil(minSpanMs / frameMs));
+  const spans: Array<{ startS: number; endS: number }> = [];
+  let runStart = -1;
+  for (let i = 0; i <= rms.length; i++) {
+    const quiet = i < rms.length && (rms[i] ?? Infinity) <= thresholdRms;
+    if (quiet && runStart < 0) runStart = i;
+    if (!quiet && runStart >= 0) {
+      if (i - runStart >= minFrames) {
+        spans.push({ startS: (runStart * frameMs) / 1000, endS: (i * frameMs) / 1000 });
+      }
+      runStart = -1;
+    }
+  }
+  // Fronteras interiores: fin del segmento i, i = 0..n-2 (n-1 fronteras).
+  const boundaries: number[] = [];
+  for (let i = 0; i + 1 < segments.length; i++) {
+    const seg = segments[i];
+    if (seg !== undefined) boundaries.push(seg.end);
+  }
+  const dist = (p: number, s: { startS: number; endS: number }): number =>
+    p < s.startS ? s.startS - p : p > s.endS ? p - s.endS : 0;
+  let within05 = 0;
+  let within10 = 0;
+  for (const b of boundaries) {
+    let best = Number.POSITIVE_INFINITY;
+    for (const s of spans) best = Math.min(best, dist(b, s));
+    if (best <= 0.5) within05++;
+    if (best <= 1.0) within10++;
+  }
+  let recall05 = 0;
+  let recall10 = 0;
+  for (const s of spans) {
+    let best = Number.POSITIVE_INFINITY;
+    for (const b of boundaries) best = Math.min(best, dist(b, s));
+    if (best <= 0.5) recall05++;
+    if (best <= 1.0) recall10++;
+  }
+  const bc = boundaries.length;
+  const sc = spans.length;
+  return {
+    frameMs,
+    thresholdRms,
+    minSpanMs,
+    spanCount: sc,
+    spans,
+    boundaryCount: bc,
+    within05Pct: bc > 0 ? (within05 / bc) * 100 : 0,
+    within10Pct: bc > 0 ? (within10 / bc) * 100 : 0,
+    recall05Pct: sc > 0 ? (recall05 / sc) * 100 : 0,
+    recall10Pct: sc > 0 ? (recall10 / sc) * 100 : 0,
+  };
+}
+
+/**
+ * F2 — frases 01/03/08 + 10 min con `return_timestamps: true`. Compara el
+ * texto resultante contra la referencia y contra la corrida SIN timestamps.
+ */
+async function runSegments(): Promise<void> {
+  if (transcriber === null) {
+    setStatus("carga el modelo primero (botón «Cargar modelo»)");
+    return;
+  }
+  if (running) {
+    setStatus("ya hay una ejecución en curso");
+    return;
+  }
+  const pipe = transcriber;
+  const result = makeResult("segments", "webgpu");
+  await beginRun(result);
+  const wallStart = performance.now();
+  try {
+    // A) Frases cortas con timestamps de segmento.
+    const sentenceReports: SegmentRunReport[] = [];
+    for (const idx of [1, 3, 8]) {
+      const s = sentencesFixture.find((x) => x.index === idx);
+      if (s === undefined) throw new Error(`falta la frase ${idx} en fixtures/sentences.json`);
+      const audio = await loadAudio16k(wavUrlFor(s.file));
+      const t0 = performance.now();
+      try {
+        const out = await pipe(audio.data, { return_timestamps: true, ...LANG_OPTS });
+        const execMs = performance.now() - t0;
+        const rep = analyzeSegments(out, execMs, audio.durationMs, s.text, null, audio.data);
+        sentenceReports.push(rep);
+        pushLog(
+          `segments sentence-0${idx}: ${rep.segmentCount} segmentos · cobertura ${(
+            rep.coverageRatio * 100
+          ).toFixed(1)}% · monótono=${String(rep.monotonic)} · mediana ${
+            rep.medianDurationMs ?? "?"
+          } ms · ${Math.round(execMs)} ms`,
+        );
+      } catch (e) {
+        sentenceReports.push(failedSegmentReport(e, performance.now() - t0, audio.durationMs));
+        pushLog(`segments sentence-0${idx}: ERROR — ${msg(e)}`);
+      }
+    }
+    result.segmentSentences = sentenceReports;
+
+    // B) 10 min con timestamps de segmento.
+    const audio = await loadAudio16k(wavUrlFor("long-10min.wav"));
+    result.audioFile = "long-10min.wav";
+    result.audioBytes = audio.bytes;
+    result.audioDurationMs = audio.durationMs;
+
+    // Texto SIN timestamps para el WER comparativo (corrida previa o aquí).
+    let plainText: string | null = null;
+    for (let i = results.length - 1; i >= 0; i--) {
+      const r = results[i];
+      if (r !== undefined && r.run === "long-10min" && r.outcome === "OK" && r.text !== null) {
+        plainText = r.text;
+        break;
+      }
+    }
+    if (plainText === null) {
+      const tp = performance.now();
+      const outPlain = await pipe(audio.data, { chunk_length_s: 30, stride_length_s: 5, ...LANG_OPTS });
+      const plainExecMs = performance.now() - tp;
+      plainText = outPlain.text;
+      pushLog(`segments: sin corrida long-10min previa — generada sin timestamps (${Math.round(plainExecMs)} ms)`);
+    }
+
+    const t1 = performance.now();
+    let segReport: SegmentRunReport;
+    try {
+      const out = await pipe(audio.data, {
+        return_timestamps: true,
+        chunk_length_s: 30,
+        stride_length_s: 5,
+        ...LANG_OPTS,
+      });
+      segReport = analyzeSegments(out, performance.now() - t1, audio.durationMs, LONG_REF, plainText, audio.data);
+    } catch (e) {
+      segReport = failedSegmentReport(e, performance.now() - t1, audio.durationMs);
+    }
+    result.segmentReport = segReport;
+    result.execMs = segReport.execMs;
+    result.rtf = audio.durationMs > 0 ? segReport.execMs / audio.durationMs : null;
+    if (segReport.ok) {
+      result.text = segReport.text;
+      if (segReport.werRef !== null) result.wer = { ...segReport.werRef, perSentence: null };
+      result.outcome = "OK";
+      pushLog(
+        `segments 10min: ${segReport.segmentCount} segmentos · cobertura ${(
+          segReport.coverageRatio * 100
+        ).toFixed(1)}% · monótono=${String(segReport.monotonic)} (retrocesos ${
+          segReport.nonMonotonicCount
+        }, máx ${segReport.maxBackwardMs ?? 0} ms) · duración mediana ${
+          segReport.medianDurationMs ?? "?"
+        } / p95 ${segReport.p95DurationMs ?? "?"} ms · WER vs ref ${(
+          (segReport.werRef?.wer ?? 0) * 100
+        ).toFixed(2)}% · WER vs sin-timestamps ${((segReport.werVsNoTimestamp?.wer ?? 0) * 100).toFixed(2)}%`,
+      );
+      const sil = segReport.silence;
+      if (sil !== null) {
+        pushLog(
+          `segments silencios: ${sil.spanCount} tramos ≥${sil.minSpanMs} ms · fronteras dentro de ±0.5 s ${sil.within05Pct.toFixed(
+            1,
+          )}% / ±1.0 s ${sil.within10Pct.toFixed(1)}% · recall ±0.5 s ${sil.recall05Pct.toFixed(1)}% / ±1.0 s ${sil.recall10Pct.toFixed(
+            1,
+          )}%`,
+        );
+      }
+      setStatus(
+        `segments: OK — ${segReport.segmentCount} segmentos · cobertura ${(
+          segReport.coverageRatio * 100
+        ).toFixed(1)}%`,
+      );
+    } else {
+      result.outcome = "ERROR";
+      result.error = segReport.error ?? "return_timestamps: true falló en los 10 min";
+      pushLog(`segments 10min: ERROR — ${result.error}`);
+      setStatus(`segments: ERROR — ${result.error}`);
+    }
+  } catch (e) {
+    result.outcome = "ERROR";
+    result.error = msg(e);
+    pushLog(`ERROR en segments: ${result.error}`);
+    setStatus(`segments: ERROR — ${result.error}`);
+  } finally {
+    result.wallMs = Math.round(performance.now() - wallStart);
+    await endRun(result);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ronda 2 (F3): chunking manual 30 s / solape 5 s + fusión de texto
+// ---------------------------------------------------------------------------
+
+/**
+ * Mayor solape «sufijo(prev) = prefijo(next)»: primero exacto (k ≥ 4) y luego
+ * fuzzy (k desde min(60, …) hasta 4, ≤ 15 % de tokens distintos). Un solape
+ * menor que 4 tokens no es fiable en inglés corto, así que se declara miss.
+ */
+function findOverlap(
+  acc: readonly string[],
+  win: readonly string[],
+): { count: number; fuzzy: boolean } {
+  const maxK = Math.min(acc.length, win.length);
+  for (let k = maxK; k >= 4; k--) {
+    let ok = true;
+    for (let j = 0; j < k; j++) {
+      if (acc[acc.length - k + j] !== win[j]) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) return { count: k, fuzzy: false };
+  }
+  const maxF = Math.min(maxK, 60);
+  for (let k = maxF; k >= 4; k--) {
+    const limit = Math.floor(k * 0.15);
+    let mism = 0;
+    for (let j = 0; j < k; j++) {
+      if (acc[acc.length - k + j] !== win[j]) {
+        mism++;
+        if (mism > limit) break;
+      }
+    }
+    if (mism <= limit) return { count: k, fuzzy: true };
+  }
+  return { count: 0, fuzzy: false };
+}
+
+/** S/D/I (sustituciones, delecciones, inserciones) con backtrace sobre la
+ * matriz de Levenshtein; s+d+i = errores totales (mismo costo unitario). */
+function werOps(ref: readonly string[], hyp: readonly string[]): WerOps {
+  const m = ref.length;
+  const n = hyp.length;
+  const w = n + 1;
+  const dp: Uint16Array[] = [];
+  for (let i = 0; i <= m; i++) dp.push(new Uint16Array(w));
+  const row0 = dp[0];
+  if (row0 !== undefined) for (let j = 0; j <= n; j++) row0[j] = j;
+  for (let i = 1; i <= m; i++) {
+    const cur = dp[i];
+    const prev = dp[i - 1];
+    if (cur === undefined || prev === undefined) continue;
+    cur[0] = i;
+    const r = ref[i - 1];
+    for (let j = 1; j <= n; j++) {
+      const cost = r === hyp[j - 1] ? 0 : 1;
+      cur[j] = Math.min((prev[j] ?? 0) + 1, (cur[j - 1] ?? 0) + 1, (prev[j - 1] ?? 0) + cost);
+    }
+  }
+  let s = 0;
+  let d = 0;
+  let ins = 0;
+  let i = m;
+  let j = n;
+  while (i > 0 || j > 0) {
+    const cur = dp[i]?.[j] ?? 0;
+    if (i > 0 && j > 0) {
+      const cost = ref[i - 1] === hyp[j - 1] ? 0 : 1;
+      if (cur === (dp[i - 1]?.[j - 1] ?? 0) + cost) {
+        if (cost === 1) s++;
+        i--;
+        j--;
+        continue;
+      }
+    }
+    if (i > 0 && cur === (dp[i - 1]?.[j] ?? 0) + 1) {
+      d++;
+      i--;
+      continue;
+    }
+    if (j > 0 && cur === (dp[i]?.[j - 1] ?? 0) + 1) {
+      ins++;
+      j--;
+      continue;
+    }
+    // Inalcanzable con costos unitarios; degradación segura.
+    if (i > 0) {
+      d++;
+      i--;
+    } else {
+      ins++;
+      j--;
+    }
+  }
+  return { s, d, i: ins };
+}
+
+/**
+ * F3 — ventanas de 30 s con solape de 5 s, transcripción independiente por
+ * ventana (timestamps de segmento si F2 funciona, si no offset conocido) y
+ * fusión por solape de texto normalizado. Mide exec por ventana y total.
+ */
+async function runManualChunk(): Promise<void> {
+  if (transcriber === null) {
+    setStatus("carga el modelo primero (botón «Cargar modelo»)");
+    return;
+  }
+  if (running) {
+    setStatus("ya hay una ejecución en curso");
+    return;
+  }
+  const pipe = transcriber;
+  const result = makeResult("manual-chunk", "webgpu");
+  await beginRun(result);
+  const wallStart = performance.now();
+  try {
+    const audio = await loadAudio16k(wavUrlFor("long-10min.wav"));
+    result.audioFile = "long-10min.wav";
+    result.audioBytes = audio.bytes;
+    result.audioDurationMs = audio.durationMs;
+    const durS = audio.data.length / SAMPLE_RATE;
+    const windowS = 30;
+    const hopS = 25;
+
+    // Ventanas: 0, 25, 50, …; la última se alinea al final del audio.
+    const starts: number[] = [];
+    for (let s = 0; s + windowS <= durS + 1e-6; s += hopS) starts.push(s);
+    const last = starts[starts.length - 1] ?? 0;
+    if (last + windowS < durS - 0.5) starts.push(Math.max(0, durS - windowS));
+
+    const windows: ManualWindowReport[] = [];
+    let acc: string[] = [];
+    let useTs: boolean | null = null;
+    let overlapHits = 0;
+    let overlapFuzzyHits = 0;
+    let overlapMisses = 0;
+    let totalExec = 0;
+
+    for (let i = 0; i < starts.length; i++) {
+      const startS = starts[i] ?? 0;
+      const endS = Math.min(startS + windowS, durS);
+      const from = Math.round(startS * SAMPLE_RATE);
+      const to = Math.round(endS * SAMPLE_RATE);
+      const slice = audio.data.subarray(from, to);
+      const t0 = performance.now();
+      let text: string;
+      let segs: SegmentInfo[];
+      let out: AutomaticSpeechRecognitionOutput | null = null;
+      if (useTs !== false) {
+        try {
+          out = await pipe(slice, { return_timestamps: true, ...LANG_OPTS });
+        } catch (e) {
+          useTs = false;
+          pushLog(`chunk ventana ${i}: return_timestamps falló (${msg(e)}) → offset conocido`);
+        }
+      }
+      if (out !== null) {
+        useTs = true;
+        text = out.text;
+        segs = [];
+        for (const c of out.chunks ?? []) {
+          if (Number.isFinite(c.timestamp[0]) && Number.isFinite(c.timestamp[1])) {
+            segs.push({ start: c.timestamp[0] + startS, end: c.timestamp[1] + startS, text: c.text });
+          }
+        }
+      } else {
+        const plain = await pipe(slice, LANG_OPTS);
+        text = plain.text;
+        segs = [{ start: startS, end: endS, text: plain.text }];
+      }
+      const execMs = performance.now() - t0;
+      totalExec += execMs;
+
+      const winTokens = tokenize(text, true);
+      let overlap = 0;
+      let fuzzy = false;
+      let miss = false;
+      if (i === 0) {
+        acc = winTokens.slice();
+      } else {
+        const m = findOverlap(acc, winTokens);
+        overlap = m.count;
+        fuzzy = m.fuzzy;
+        miss = m.count === 0;
+        if (miss) overlapMisses++;
+        else if (fuzzy) overlapFuzzyHits++;
+        else overlapHits++;
+        acc = acc.slice(0, acc.length - overlap).concat(winTokens);
+      }
+      windows.push({
+        index: i,
+        startS: round2(startS),
+        endS: round2(endS),
+        execMs: Math.round(execMs),
+        wordsIn: winTokens.length,
+        overlapWords: overlap,
+        overlapMiss: miss,
+        overlapFuzzy: fuzzy,
+        wordsAfter: acc.length,
+        segmentCount: segs.length,
+        segments: segs,
+      });
+      pushLog(
+        `chunk ventana ${i} [${round2(startS)}–${round2(endS)} s]: ${Math.round(execMs)} ms · ${
+          winTokens.length
+        } palabras · solape ${overlap}${fuzzy ? " (fuzzy)" : ""}${miss ? " (MISS)" : ""} → ${acc.length} acumuladas`,
+      );
+    }
+
+    const mergedText = acc.join(" ");
+    const pair = computeWer(LONG_REF, mergedText);
+    result.text = mergedText;
+    result.wer = { ...pair, perSentence: null };
+    result.execMs = totalExec;
+    result.rtf = audio.durationMs > 0 ? totalExec / audio.durationMs : null;
+    const ops = werOps(tokenize(LONG_REF, true), acc);
+
+    // Baseline: última corrida long-10min OK (S8/D194/I1 en la ronda 1).
+    let baselineOps: WerOps | null = null;
+    for (let i = results.length - 1; i >= 0; i--) {
+      const r = results[i];
+      if (r !== undefined && r !== result && r.run === "long-10min" && r.outcome === "OK" && r.text !== null) {
+        baselineOps = werOps(tokenize(LONG_REF, true), tokenize(r.text, true));
+        break;
+      }
+    }
+    const deletionsDelta = baselineOps !== null ? ops.d - baselineOps.d : null;
+    const totalWallMs = Math.round(performance.now() - wallStart);
+    result.manualChunk = {
+      windowS,
+      hopS,
+      windowCount: windows.length,
+      usedSegmentTimestamps: useTs === true,
+      windows,
+      totalExecMs: Math.round(totalExec),
+      totalWallMs,
+      overlapHits,
+      overlapFuzzyHits: overlapFuzzyHits,
+      overlapMisses,
+      text: mergedText,
+      wer: pair,
+      ops,
+      baselineOps,
+      deletionsDelta,
+    };
+    result.outcome = "OK";
+    pushLog(
+      `manual-chunk: ${windows.length} ventanas · exec total ${Math.round(totalExec)} ms · wall ${totalWallMs} ms · ` +
+        `WER ${(pair.wer * 100).toFixed(2)}% · ops S${ops.s}/D${ops.d}/I${ops.i}` +
+        (baselineOps !== null
+          ? ` vs baseline S${baselineOps.s}/D${baselineOps.d}/I${baselineOps.i} (ΔD ${deletionsDelta ?? "?"})`
+          : " (sin baseline long-10min)"),
+    );
+    setStatus(
+      `manual-chunk: OK — WER ${(pair.wer * 100).toFixed(2)}% · exec ${Math.round(totalExec)} ms`,
+    );
+  } catch (e) {
+    result.outcome = "ERROR";
+    result.error = msg(e);
+    pushLog(`ERROR en manual-chunk: ${result.error}`);
+    setStatus(`manual-chunk: ERROR — ${result.error}`);
+  } finally {
+    result.wallMs = Math.round(performance.now() - wallStart);
+    await endRun(result);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ronda 2 (F4): hooks de medición alrededor de pipeline()
+// ---------------------------------------------------------------------------
+
+interface LoadHookWindow {
+  t0: number;
+  t1: number;
+}
+
+interface LoadHookState {
+  marks: string[];
+  cacheReads: Array<{ t0: number; t1: number; bytes: number }>;
+  fetches: Array<{ t0: number; t1: number; metadata: boolean }>;
+  config: LoadHookWindow | null;
+  tokenizer: LoadHookWindow | null;
+  model: LoadHookWindow | null;
+  wasmCount: number;
+  wasmMs: number;
+  sessionCount: number;
+  sessionMs: number;
+  deviceCount: number;
+  deviceMs: number;
+}
+
+interface LoadHooks {
+  state: LoadHookState;
+  restore: () => void;
+}
+
+/** Cabecera `Range` de una llamada a fetch (para identificar metadata probes). */
+function rangeHeaderValue(input: RequestInfo | URL, init?: RequestInit): string | null {
+  if (input instanceof Request) return input.headers.get("range");
+  const h = init?.headers;
+  if (h === undefined) return null;
+  if (h instanceof Headers) return h.get("range");
+  if (Array.isArray(h)) {
+    for (const pair of h) {
+      if ((pair[0] ?? "").toLowerCase() === "range") return pair[1] ?? null;
+    }
+    return null;
+  }
+  for (const [k, v] of Object.entries(h)) {
+    if (k.toLowerCase() === "range") return v;
+  }
+  return null;
+}
+
+function isMetadataRange(input: RequestInfo | URL, init?: RequestInit): boolean {
+  const r = rangeHeaderValue(input, init);
+  return r !== null && r.replace(/\s+/g, "") === "bytes=0-0";
+}
+
+/**
+ * Instala los wrappers de medición (F4): Cache API, fetch (transformers y
+ * global), `AutoConfig`/`AutoTokenizer`/`AutoModelForSpeechSeq2Seq`,
+ * `InferenceSession.create`, `WebAssembly.instantiate*` y `requestDevice`.
+ * Devuelve `restore()` idempotente; `discardLoadHooks` solo restaura.
+ */
+function installLoadHooks(): LoadHooks {
+  const state: LoadHookState = {
+    marks: [],
+    cacheReads: [],
+    fetches: [],
+    config: null,
+    tokenizer: null,
+    model: null,
+    wasmCount: 0,
+    wasmMs: 0,
+    sessionCount: 0,
+    sessionMs: 0,
+    deviceCount: 0,
+    deviceMs: 0,
+  };
+  const restores: Array<() => void> = [];
+  let active = true;
+
+  // 1) Cache.prototype.match → tiempo + bytes (content-length, best effort).
+  const origMatch = Cache.prototype.match;
+  Cache.prototype.match = function (
+    this: Cache,
+    request: RequestInfo | URL,
+    options?: CacheQueryOptions,
+  ): Promise<Response | undefined> {
+    const t0 = performance.now();
+    return origMatch.call(this, request, options).then((res) => {
+      if (active) {
+        let bytes = 0;
+        const cl = res !== undefined ? res.headers.get("content-length") : null;
+        if (cl !== null) bytes = Number.parseInt(cl, 10) || 0;
+        state.cacheReads.push({ t0, t1: performance.now(), bytes });
+      }
+      return res;
+    });
+  };
+  restores.push(() => {
+    Cache.prototype.match = origMatch;
+  });
+
+  // 2) env.fetch (transformers) → red, separando probes de metadata (Range 0-0).
+  const origEnvFetch = env.fetch;
+  env.fetch = async (input: string | URL, init?: RequestInit): Promise<Response> => {
+    const t0 = performance.now();
+    const res: Response = await origEnvFetch(input, init);
+    if (active) state.fetches.push({ t0, t1: performance.now(), metadata: isMetadataRange(input, init) });
+    return res;
+  };
+  restores.push(() => {
+    env.fetch = origEnvFetch;
+  });
+
+  // 3) globalThis.fetch → ORT y cualquier otro consumidor fuera de env.fetch.
+  const origGlobalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const t0 = performance.now();
+    const res = await origGlobalFetch.call(globalThis, input, init);
+    if (active) state.fetches.push({ t0, t1: performance.now(), metadata: isMetadataRange(input, init) });
+    return res;
+  };
+  restores.push(() => {
+    globalThis.fetch = origGlobalFetch;
+  });
+
+  // 4) Config/tokenizer/modelo: ventanas de wall para el desglose.
+  type ConfigFT = typeof AutoConfig.from_pretrained;
+  const origConfig: ConfigFT = AutoConfig.from_pretrained;
+  AutoConfig.from_pretrained = (async (path: string, opts?: Parameters<ConfigFT>[1]) => {
+    const t0 = performance.now();
+    try {
+      return await origConfig.call(AutoConfig, path, opts);
+    } finally {
+      if (active) state.config = { t0, t1: performance.now() };
+    }
+  }) as ConfigFT;
+  restores.push(() => {
+    AutoConfig.from_pretrained = origConfig;
+  });
+
+  type TokenizerFT = typeof AutoTokenizer.from_pretrained;
+  const origTokenizer: TokenizerFT = AutoTokenizer.from_pretrained;
+  AutoTokenizer.from_pretrained = (async (path: string, opts?: Parameters<TokenizerFT>[1]) => {
+    const t0 = performance.now();
+    try {
+      return await origTokenizer.call(AutoTokenizer, path, opts);
+    } finally {
+      if (active) state.tokenizer = { t0, t1: performance.now() };
+    }
+  }) as TokenizerFT;
+  restores.push(() => {
+    AutoTokenizer.from_pretrained = origTokenizer;
+  });
+
+  type ModelFT = typeof AutoModelForSpeechSeq2Seq.from_pretrained;
+  const origModel: ModelFT = AutoModelForSpeechSeq2Seq.from_pretrained;
+  AutoModelForSpeechSeq2Seq.from_pretrained = (async (path: string, opts?: Parameters<ModelFT>[1]) => {
+    const t0 = performance.now();
+    try {
+      return await origModel.call(AutoModelForSpeechSeq2Seq, path, opts);
+    } finally {
+      if (active) state.model = { t0, t1: performance.now() };
+    }
+  }) as ModelFT;
+  restores.push(() => {
+    AutoModelForSpeechSeq2Seq.from_pretrained = origModel;
+  });
+
+  // 5) Sesiones ORT (grafo + compilación de pipelines WebGPU).
+  const origCreateTyped: typeof InferenceSession.create = InferenceSession.create;
+  const origCreate = origCreateTyped as unknown as (...args: unknown[]) => Promise<InferenceSession>;
+  InferenceSession.create = (async (...args: unknown[]) => {
+    const t0 = performance.now();
+    try {
+      return await origCreate.apply(InferenceSession, args);
+    } finally {
+      if (active) {
+        state.sessionCount++;
+        state.sessionMs += performance.now() - t0;
+      }
+    }
+  }) as unknown as typeof InferenceSession.create;
+  restores.push(() => {
+    InferenceSession.create = origCreateTyped;
+  });
+
+  // 6) Compilación/instantiación de wasm del runtime ORT.
+  for (const fnName of ["instantiate", "instantiateStreaming"] as const) {
+    const desc = Object.getOwnPropertyDescriptor(WebAssembly, fnName);
+    if (desc === undefined || desc.value === undefined) continue;
+    const orig = desc.value as (...args: unknown[]) => Promise<unknown>;
+    Object.defineProperty(WebAssembly, fnName, {
+      ...desc,
+      value: (...args: unknown[]): Promise<unknown> => {
+        const t0 = performance.now();
+        return orig.apply(WebAssembly, args).then((r) => {
+          if (active) {
+            state.wasmCount++;
+            state.wasmMs += performance.now() - t0;
+          }
+          return r;
+        });
+      },
+    });
+    restores.push(() => {
+      Object.defineProperty(WebAssembly, fnName, desc);
+    });
+  }
+
+  // 7) adapter.requestDevice() (prototipo capturado en probeWebGpu).
+  const protoObj = gpuAdapterProto;
+  if (protoObj !== null) {
+    const desc = Object.getOwnPropertyDescriptor(protoObj, "requestDevice");
+    if (desc !== undefined && typeof desc.value === "function") {
+      const origRD = desc.value as (descriptor?: GPUDeviceDescriptor) => Promise<GPUDevice>;
+      Object.defineProperty(protoObj, "requestDevice", {
+        ...desc,
+        value: function (this: GPUAdapter, descriptor?: GPUDeviceDescriptor): Promise<GPUDevice> {
+          const t0 = performance.now();
+          return origRD.call(this, descriptor).then((dev) => {
+            if (active) {
+              state.deviceCount++;
+              state.deviceMs += performance.now() - t0;
+            }
+            return dev;
+          });
+        },
+      });
+      restores.push(() => {
+        Object.defineProperty(protoObj, "requestDevice", desc);
+      });
+    }
+  }
+
+  return {
+    state,
+    restore: (): void => {
+      if (!active) return;
+      active = false;
+      for (const r of restores) r();
+    },
+  };
+}
+
+/** Restaura todos los wrappers sin calcular nada (ruta de error). */
+function discardLoadHooks(hooks: LoadHooks): void {
+  hooks.restore();
+}
+
+/**
+ * Restaura los wrappers, crea las `performance.measure` de las fases y
+ * devuelve el desglose. `tokenizerWallMs` y `modelWallMs` se solapan
+ * (Promise.all en pipeline()); las lecturas de caché se atribuyen a la ventana
+ * en la que cayeron (pueden contar en ambas). El residuo puede ser negativo
+ * cuando hay solapes (fetch de red dentro de las ventanas del modelo).
+ */
+function uninstallLoadHooks(hooks: LoadHooks, totalMs: number): LoadBreakdown {
+  hooks.restore();
+  const st = hooks.state;
+  try {
+    performance.measure("spike:load:total", "spike:load:start", "spike:load:end");
+    st.marks.push("spike:load:total");
+  } catch {
+    // Sin marcas start/end no hay medida de total (no debería ocurrir).
+  }
+  const mk = (name: string, w: LoadHookWindow | null): void => {
+    if (w === null) return;
+    try {
+      performance.measure(name, { start: w.t0, end: w.t1 });
+      st.marks.push(name);
+    } catch {
+      // Medida inválida: se omite, no rompe la corrida.
+    }
+  };
+  mk("spike:load:config", st.config);
+  mk("spike:load:tokenizer", st.tokenizer);
+  mk("spike:load:model", st.model);
+
+  let cacheReadSumMs = 0;
+  let cacheReadBytes = 0;
+  let minT = Number.POSITIVE_INFINITY;
+  let maxT = Number.NEGATIVE_INFINITY;
+  for (const r of st.cacheReads) {
+    cacheReadSumMs += r.t1 - r.t0;
+    cacheReadBytes += r.bytes;
+    minT = Math.min(minT, r.t0);
+    maxT = Math.max(maxT, r.t1);
+  }
+  const cacheReadSpanMs = st.cacheReads.length > 0 ? maxT - minT : 0;
+  const overlapWith = (w: LoadHookWindow | null): number => {
+    if (w === null) return 0;
+    let sum = 0;
+    for (const r of st.cacheReads) {
+      const o = Math.min(w.t1, r.t1) - Math.max(w.t0, r.t0);
+      if (o > 0) sum += o;
+    }
+    return sum;
+  };
+  const configWallMs = st.config !== null ? st.config.t1 - st.config.t0 : 0;
+  const tokenizerWallMs = st.tokenizer !== null ? st.tokenizer.t1 - st.tokenizer.t0 : 0;
+  const tokenizerCacheMs = overlapWith(st.tokenizer);
+  const tokenizerParseMs = tokenizerWallMs - tokenizerCacheMs;
+  const modelWallMs = st.model !== null ? st.model.t1 - st.model.t0 : 0;
+  const modelCacheMs = overlapWith(st.model);
+  const modelOtherMs = modelWallMs - modelCacheMs - st.sessionMs;
+  let networkFetchCount = 0;
+  let networkFetchSumMs = 0;
+  let metadataFetchSumMs = 0;
+  for (const f of st.fetches) {
+    if (f.metadata) metadataFetchSumMs += f.t1 - f.t0;
+    else {
+      networkFetchCount++;
+      networkFetchSumMs += f.t1 - f.t0;
+    }
+  }
+  const webgpuPipelineMs = st.sessionMs - st.deviceMs;
+  const residualMs =
+    totalMs - (cacheReadSumMs + tokenizerParseMs + modelOtherMs + st.sessionMs + networkFetchSumMs + metadataFetchSumMs);
+  return {
+    totalMs: round2(totalMs),
+    cacheReadSpanMs: round2(cacheReadSpanMs),
+    cacheReadSumMs: round2(cacheReadSumMs),
+    cacheReadCount: st.cacheReads.length,
+    cacheReadBytes,
+    networkFetchCount,
+    networkFetchSumMs: round2(networkFetchSumMs),
+    metadataFetchSumMs: round2(metadataFetchSumMs),
+    configWallMs: round2(configWallMs),
+    tokenizerWallMs: round2(tokenizerWallMs),
+    tokenizerCacheMs: round2(tokenizerCacheMs),
+    tokenizerParseMs: round2(tokenizerParseMs),
+    modelWallMs: round2(modelWallMs),
+    modelCacheMs: round2(modelCacheMs),
+    modelOtherMs: round2(modelOtherMs),
+    wasmCompileCount: st.wasmCount,
+    wasmCompileMs: round2(st.wasmMs),
+    ortSessionCount: st.sessionCount,
+    ortSessionMs: round2(st.sessionMs),
+    webgpuDeviceCount: st.deviceCount,
+    webgpuDeviceMs: round2(st.deviceMs),
+    webgpuPipelineMs: round2(webgpuPipelineMs),
+    residualMs: round2(residualMs),
+    marks: st.marks,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Arranque
 // ---------------------------------------------------------------------------
 
@@ -1863,6 +3355,11 @@ function wireUi(): void {
   byId<HTMLButtonElement>("btn-sentences").addEventListener("click", () => void runSentences());
   byId<HTMLButtonElement>("btn-long").addEventListener("click", () => void runLong());
   byId<HTMLButtonElement>("btn-wasm").addEventListener("click", () => void runWasmFallback());
+  // Ronda 2 (F1–F3).
+  byId<HTMLButtonElement>("btn-adapters").addEventListener("click", () => void runAdapterProbe());
+  byId<HTMLButtonElement>("btn-segments").addEventListener("click", () => void runSegments());
+  byId<HTMLButtonElement>("btn-chunk").addEventListener("click", () => void runManualChunk());
+  byId<HTMLButtonElement>("btn-altgpu").addEventListener("click", () => void runLongAltAdapter());
 }
 
 async function init(): Promise<void> {
