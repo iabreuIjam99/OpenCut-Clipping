@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Spike — WORKERFS + ffmpeg.wasm | MonetizaClip</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      body {
+        margin: 0;
+        padding: 20px 24px 48px;
+        background: #0d1117;
+        color: #e6edf3;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+        line-height: 1.45;
+      }
+      h1 {
+        font-size: 1.3rem;
+        margin: 0 0 2px;
+      }
+      h2 {
+        font-size: 1rem;
+        margin: 0 0 8px;
+        color: #79c0ff;
+      }
+      p {
+        margin: 6px 0;
+      }
+      .muted {
+        color: #8b949e;
+        font-size: 0.85rem;
+      }
+      code {
+        background: #161b22;
+        padding: 1px 5px;
+        border-radius: 4px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      section.card {
+        background: #161b22;
+        border: 1px solid #30363d;
+        border-radius: 8px;
+        padding: 14px 16px;
+        margin-top: 14px;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+        padding: 6px 0;
+        border-bottom: 1px dashed #21262d;
+      }
+      .row:last-child {
+        border-bottom: none;
+      }
+      .row strong {
+        min-width: 128px;
+        font-family: ui-monospace, monospace;
+      }
+      button {
+        background: #238636;
+        border: 1px solid #2ea043;
+        color: #fff;
+        padding: 6px 14px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-weight: 600;
+        font-size: 0.88rem;
+      }
+      button.secondary {
+        background: #21262d;
+        border-color: #30363d;
+        color: #c9d1d9;
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      select {
+        background: #0d1117;
+        color: #e6edf3;
+        border: 1px solid #30363d;
+        border-radius: 6px;
+        padding: 5px 8px;
+      }
+      input[type="file"] {
+        color: #c9d1d9;
+        font-size: 0.85rem;
+        max-width: 320px;
+      }
+      dl {
+        display: grid;
+        grid-template-columns: max-content 1fr;
+        gap: 2px 14px;
+        margin: 0;
+        font-size: 0.86rem;
+      }
+      dt {
+        color: #8b949e;
+      }
+      dd {
+        margin: 0;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        word-break: break-all;
+      }
+      pre {
+        background: #010409;
+        border: 1px solid #30363d;
+        border-radius: 6px;
+        padding: 10px;
+        overflow: auto;
+        max-height: 320px;
+        font-size: 11.5px;
+        white-space: pre-wrap;
+        word-break: break-all;
+        margin: 6px 0 0;
+      }
+      .badge {
+        padding: 2px 9px;
+        border-radius: 999px;
+        font-size: 0.76rem;
+        font-weight: 700;
+        background: #30363d;
+        color: #c9d1d9;
+      }
+      .badge.ok {
+        background: #1a7f37;
+        color: #fff;
+      }
+      .badge.err {
+        background: #da3633;
+        color: #fff;
+      }
+      .badge.run {
+        background: #9e6a03;
+        color: #fff;
+      }
+      #markers {
+        font-family: ui-monospace, monospace;
+        font-size: 0.82rem;
+        color: #7ee787;
+        min-height: 1.1em;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Spike: WORKERFS + ffmpeg.wasm</h1>
+    <p class="muted">
+      El vídeo del usuario se monta en el FS de ffmpeg con <code>WORKERFS</code> —
+      <strong>nunca</strong> se llama a <code>writeFile(arrayBuffer)</code> con el vídeo. Meta: extraer el
+      audio (16 kHz mono) con <code>libopus</code> y medir si el arquitectura local-first es viable.
+    </p>
+
+    <section class="card">
+      <h2>Entorno</h2>
+      <dl id="env"></dl>
+    </section>
+
+    <section class="card">
+      <h2>Core y códecs</h2>
+      <dl id="core-info"></dl>
+      <div class="row">
+        <label for="core-select">Core</label>
+        <select id="core-select">
+          <option value="st">@ffmpeg/core (single-thread)</option>
+          <option value="mt">@ffmpeg/core-mt (multithread)</option>
+        </select>
+        <button id="reload-core" type="button" class="secondary">Recargar core</button>
+        <span id="core-status" class="muted">cargando…</span>
+      </div>
+      <div class="row">
+        <span class="muted">Cadena de intentos (R3):</span>
+        <span id="chain" class="muted">—</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Ejecuciones</h2>
+
+      <div class="row">
+        <strong>short-30s</strong>
+        <input type="file" id="file-short-30s" aria-label="fixture-short-30s" accept="video/mp4,.mp4" />
+        <button type="button" data-fixture="short-30s" id="run-short-30s">Extraer audio</button>
+        <span class="badge" id="state-short-30s">—</span>
+        <span class="muted" id="detail-short-30s">calentamiento</span>
+      </div>
+
+      <div class="row">
+        <strong>medium-10min</strong>
+        <input type="file" id="file-medium-10min" aria-label="fixture-medium-10min" accept="video/mp4,.mp4" />
+        <button type="button" data-fixture="medium-10min" id="run-medium-10min">Extraer audio</button>
+        <span class="badge" id="state-medium-10min">—</span>
+        <span class="muted" id="detail-medium-10min">~500 MB</span>
+      </div>
+
+      <div class="row">
+        <strong>large-2gb</strong>
+        <input type="file" id="file-large-2gb" aria-label="fixture-large-2gb" accept="video/mp4,.mp4" />
+        <button type="button" data-fixture="large-2gb" id="run-large-2gb">Extraer audio</button>
+        <span class="badge" id="state-large-2gb">—</span>
+        <span class="muted" id="detail-large-2gb">1 h / &gt; 2 GB — la prueba crítica</span>
+      </div>
+
+      <div class="row">
+        <label for="cbr">
+          <input type="checkbox" id="cbr" />
+          forzar CBR (<code>-vbr off</code>) para acotar el tamaño de salida
+        </label>
+        <button type="button" class="secondary" id="clean">Limpiar (unmount + deleteDir + deleteFile)</button>
+        <span class="muted" id="status">listo</span>
+      </div>
+    </section>
+
+    <h2 style="margin-top: 22px">window.__SPIKE_RESULTS__</h2>
+    <div id="markers"></div>
+    <pre id="results">[]</pre>
+
+    <h2 style="margin-top: 22px">Log de ffmpeg</h2>
+    <pre id="log"></pre>
+
+    <script type="module" src="/main.ts"></script>
+  </body>
+</html>
