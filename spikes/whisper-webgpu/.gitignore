@@ -1,0 +1,9 @@
+node_modules/
+dist/
+public/models/
+*.log
+# fixtures/ está casi entero generado (R1: no se commitea), pero R4 obliga a
+# versionar los textos de referencia (script.txt y sentences.json):
+fixtures/*
+!fixtures/script.txt
+!fixtures/sentences.json

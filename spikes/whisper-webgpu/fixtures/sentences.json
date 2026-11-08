@@ -1,0 +1,122 @@
+[
+    {
+        "index":  1,
+        "file":  "sentence-01.wav",
+        "text":  "The old lighthouse stood at the edge of a rocky point where the sea met the land.",
+        "durationMs":  4590
+    },
+    {
+        "index":  2,
+        "file":  "sentence-02.wav",
+        "text":  "For as long as anyone could remember, its light had swept across the water every night.",
+        "durationMs":  5790
+    },
+    {
+        "index":  3,
+        "file":  "sentence-03.wav",
+        "text":  "Sailors said that the beam was brighter than any other light along the coast.",
+        "durationMs":  4560
+    },
+    {
+        "index":  4,
+        "file":  "sentence-04.wav",
+        "text":  "They were grateful for it, because the rocks below the point had sunk many ships.",
+        "durationMs":  5350
+    },
+    {
+        "index":  5,
+        "file":  "sentence-05.wav",
+        "text":  "The keeper lived alone in a small stone house attached to the tower.",
+        "durationMs":  4190
+    },
+    {
+        "index":  6,
+        "file":  "sentence-06.wav",
+        "text":  "Each evening he climbed the narrow stairs and cleaned the great glass lens.",
+        "durationMs":  4570
+    },
+    {
+        "index":  7,
+        "file":  "sentence-07.wav",
+        "text":  "He filled the lamp with oil and checked the clockwork that turned the light.",
+        "durationMs":  4210
+    },
+    {
+        "index":  8,
+        "file":  "sentence-08.wav",
+        "text":  "Then he sat by the window and listened to the waves strike the shore.",
+        "durationMs":  4040
+    },
+    {
+        "index":  9,
+        "file":  "sentence-09.wav",
+        "text":  "His only companion was a grey cat that had wandered in from the fields.",
+        "durationMs":  4360
+    },
+    {
+        "index":  10,
+        "file":  "sentence-10.wav",
+        "text":  "The cat never hunted the birds that nested in the grass around the tower.",
+        "durationMs":  4320
+    },
+    {
+        "index":  11,
+        "file":  "sentence-11.wav",
+        "text":  "It preferred to sleep in a coil of rope near the door.",
+        "durationMs":  3520
+    },
+    {
+        "index":  12,
+        "file":  "sentence-12.wav",
+        "text":  "In the morning the keeper wrote a short note in his small notebook.",
+        "durationMs":  3930
+    },
+    {
+        "index":  13,
+        "file":  "sentence-13.wav",
+        "text":  "He recorded the weather, the state of the lamp, and any ships he had seen.",
+        "durationMs":  5280
+    },
+    {
+        "index":  14,
+        "file":  "sentence-14.wav",
+        "text":  "The notebook was filled with years of quiet and careful handwriting.",
+        "durationMs":  4140
+    },
+    {
+        "index":  15,
+        "file":  "sentence-15.wav",
+        "text":  "Once a week a boy rowed a boat from the village with bread and letters.",
+        "durationMs":  4070
+    },
+    {
+        "index":  16,
+        "file":  "sentence-16.wav",
+        "text":  "The boy never stayed long, because the climb up the stairs made him dizzy.",
+        "durationMs":  5060
+    },
+    {
+        "index":  17,
+        "file":  "sentence-17.wav",
+        "text":  "The keeper would wave from the gallery as the boat turned back toward home.",
+        "durationMs":  4280
+    },
+    {
+        "index":  18,
+        "file":  "sentence-18.wav",
+        "text":  "Sometimes the fog came in so thick that the light seemed to drown in it.",
+        "durationMs":  4350
+    },
+    {
+        "index":  19,
+        "file":  "sentence-19.wav",
+        "text":  "On those nights the keeper sounded the great horn until his arms ached.",
+        "durationMs":  4340
+    },
+    {
+        "index":  20,
+        "file":  "sentence-20.wav",
+        "text":  "The sound rolled out over the water and warned the ships to keep their distance.",
+        "durationMs":  4560
+    }
+]
