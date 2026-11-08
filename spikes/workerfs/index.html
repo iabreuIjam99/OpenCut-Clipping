@@ -152,7 +152,7 @@
     <p class="muted">
       El vídeo del usuario se monta en el FS de ffmpeg con <code>WORKERFS</code> —
       <strong>nunca</strong> se llama a <code>writeFile(arrayBuffer)</code> con el vídeo. Meta: extraer el
-      audio (16 kHz mono) con <code>libopus</code> y medir si el arquitectura local-first es viable.
+      audio (16 kHz mono) con <code>libopus</code> y medir si la arquitectura local-first es viable.
     </p>
 
     <section class="card">
@@ -206,12 +206,23 @@
       </div>
 
       <div class="row">
-        <label for="cbr">
-          <input type="checkbox" id="cbr" />
-          forzar CBR (<code>-vbr off</code>) para acotar el tamaño de salida
+        <label for="literal-vbr">
+          <input type="checkbox" id="literal-vbr" />
+          diagnóstico: usar el comando literal <strong>sin</strong> <code>-vbr off</code>
+          (por defecto aplica el comando de producción <code>-vbr off</code>, ADR-02)
         </label>
         <button type="button" class="secondary" id="clean">Limpiar (unmount + deleteDir + deleteFile)</button>
         <span class="muted" id="status">listo</span>
+      </div>
+
+      <div class="row">
+        <span class="muted">
+          Memoria: el <strong>único</strong> número que soporta «sin OOM» es el total de
+          <code>performance.measureUserAgentSpecificMemory()</code> (con su <em>breakdown</em> por URL).
+          <code>performance.memory.usedJSHeapSize</code> es solo un <strong>cota inferior</strong> (no
+          incluye el heap de WASM ni los buffers del worker) y <strong>no</strong> debe usarse para el
+          veredicto. Se muestrea en periodo + una medición final esperada tras <code>exec</code>.
+        </span>
       </div>
     </section>
 

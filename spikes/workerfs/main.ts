@@ -37,6 +37,16 @@ interface SpikeResult {
   peakJsHeapMB: number;
   peakPageMemoryMB: number | null;
   pageBreakdown: PageBreakdownEntry[];
+  /** Medición UASM final esperada tras `exec` (la que soporta «sin OOM»). */
+  pageFinalBytes: number | null;
+  pageFinalBreakdown: PageBreakdownEntry[];
+  pageFinalError: string | null;
+  /** Muestras UASM periódicas aceptadas / rechazadas por límite de la API. */
+  pageSamples: number;
+  pageRejected: number;
+  pageFirstError: string | null;
+  /** Intervalo final alcanzado entre muestras UASM (ms) tras la adaptación. */
+  pageSampleIntervalMs: number | null;
   memorySamples: number;
   pageMemoryError: string | null;
   logMessages: number;
@@ -46,8 +56,13 @@ interface SpikeResult {
 }
 
 interface PageBreakdownEntry {
+  /** URL atribuida (p. ej. la página o `.../ffmpeg/worker.js`); `(sin url)` si no la hay. */
   url: string;
   bytes: number;
+  /** `Window`, `DedicatedWorkerGlobalScope`, … (según `attribution[].scope`). */
+  scope?: string;
+  /** `JavaScript`, `DOM`, `Shared`, … (según `types`). */
+  types?: string[];
 }
 
 interface SpikeEnv {
@@ -116,7 +131,16 @@ const LOG_DROP_CHUNK = 500;
 const UI_LOG_LINES = 200;
 const MAX_INPUT_BYTES = 8 * 1024 * MB;
 const TICK_MS = 250;
-const PAGE_MEM_TICKS = 40; // 10 s
+const PERSIST_TICKS = 40; // persist/publish cada 10 s (250 ms × 40)
+// Muestreo de `measureUserAgentSpecificMemory()`: se arranca a 2 s y se adapta
+// (×2 con backoff ante rechazo de cuota/límite, ×0,75 con éxito, tope 30 s)
+// para terminar en la máxima frecuencia que la API acepte.
+const PAGE_MEM_START_MS = 2000;
+const PAGE_MEM_MIN_MS = 1000;
+const PAGE_MEM_MAX_MS = 30000;
+// Red de seguridad de la medición final: si la API se colgara, la corrida no
+// queda bloqueada en «esperando UASM final» (no ocurrió en ninguna corrida).
+const PAGE_FINAL_TIMEOUT_MS = 60000;
 const ALLOWED_MIME: readonly string[] = ["video/mp4", "video/x-m4v", "video/quicktime"];
 
 // `performance.memory` y `measureUserAgentSpecificMemory()` no están (o no están
@@ -149,13 +173,23 @@ let logRenderTimer: number | null = null;
 
 interface SamplerState {
   intervalId: number;
+  pageTimerId: number;
+  pagePromise: Promise<void> | null;
+  pageIntervalMs: number;
   execStart: number;
+  /** true cuando `exec` ya resolvió: el reloj de `execMs` deja de avanzar. */
+  execLocked: boolean;
   peakJs: number;
   peakPage: number | null;
   peakBreakdown: PageBreakdownEntry[];
+  lastPage: number | null;
+  lastBreakdown: PageBreakdownEntry[];
   samples: number;
+  pageSamples: number;
+  pageRejected: number;
+  pageFirstError: string | null;
+  pageLastError: string | null;
   pageErr: string | null;
-  pagePending: boolean;
   result: SpikeResult;
 }
 let sampler: SamplerState | null = null;
@@ -218,6 +252,13 @@ function restore(): void {
         recovered++;
       }
       item.pageBreakdown ??= [];
+      item.pageFinalBytes ??= null;
+      item.pageFinalBreakdown ??= [];
+      item.pageFinalError ??= null;
+      item.pageSamples ??= 0;
+      item.pageRejected ??= 0;
+      item.pageFirstError ??= null;
+      item.pageSampleIntervalMs ??= null;
       item.logMessages ??= 0;
       results.push(item);
     }
@@ -478,29 +519,108 @@ async function initEncoderChain(): Promise<void> {
 // Memoria
 // ---------------------------------------------------------------------------
 
+/** ¿El fallo encaja con el límite de frecuencia/cuota de la API? */
+function isRateLimitError(text: string): boolean {
+  return /quota|cuota|securityerror|rate|frecuencia|limi/i.test(text);
+}
+
+/**
+ * Toma UNA muestra UASM. Nunca lanza: registra rechazos (cuota/límite) y
+ * retrocede el intervalo para respetar la máxima frecuencia que la API acepte.
+ */
 async function samplePageMemory(st: SamplerState): Promise<void> {
-  if (st.pagePending) return;
-  const fn = perfExt.measureUserAgentSpecificMemory;
-  if (typeof fn !== "function") {
-    if (st.pageErr === null) st.pageErr = "performance.measureUserAgentSpecificMemory() no disponible";
-    return;
-  }
-  st.pagePending = true;
   try {
+    const fn = perfExt.measureUserAgentSpecificMemory;
+    if (typeof fn !== "function") {
+      if (st.pageErr === null) {
+        st.pageErr = "performance.measureUserAgentSpecificMemory() no disponible";
+      }
+      return;
+    }
     const measured = readMeasurement(await fn.call(performance));
     if (measured === null) {
       if (st.pageErr === null) st.pageErr = "respuesta inesperada de measureUserAgentSpecificMemory";
       return;
     }
     if (!Number.isFinite(measured.bytes) || measured.bytes <= 0) return;
+    st.pageSamples++;
+    st.lastPage = measured.bytes;
+    st.lastBreakdown = measured.breakdown;
     if (st.peakPage === null || measured.bytes > st.peakPage) {
       st.peakPage = measured.bytes;
       st.peakBreakdown = measured.breakdown;
     }
+    // Éxito: se acerca al límite de frecuencia que la API tolere (min 1 s).
+    st.pageIntervalMs = Math.max(PAGE_MEM_MIN_MS, Math.round(st.pageIntervalMs * 0.75));
   } catch (e) {
-    if (st.pageErr === null) st.pageErr = msg(e);
+    const text = msg(e);
+    st.pageRejected++;
+    if (st.pageFirstError === null) st.pageFirstError = text;
+    st.pageLastError = text;
+    if (st.pageErr === null) st.pageErr = text;
+    if (isRateLimitError(text)) {
+      st.pageIntervalMs = Math.min(st.pageIntervalMs * 2, PAGE_MEM_MAX_MS);
+      pushLog(
+        `UASM rechazada #${st.pageRejected}: ${text} → intervalo ${st.pageIntervalMs} ms (respeta el límite de la API)`,
+      );
+    }
+  }
+}
+
+/** Toma una muestra si no hay otra en vuelo (une al llamador a la promesa activa). */
+async function takePageSample(st: SamplerState): Promise<void> {
+  if (st.pagePromise !== null) return st.pagePromise;
+  const call = samplePageMemory(st);
+  st.pagePromise = call;
+  try {
+    await call;
   } finally {
-    st.pagePending = false;
+    st.pagePromise = null;
+  }
+}
+
+/** Cadena de muestreo periódico UASM; se reprograma solo mientras viva la corrida. */
+function schedulePageSample(st: SamplerState): void {
+  st.pageTimerId = window.setTimeout(() => {
+    void takePageSample(st).then(() => {
+      if (sampler === st) schedulePageSample(st);
+    });
+  }, st.pageIntervalMs);
+}
+
+/**
+ * Medición UASM final: se espera (await) DESPUÉS de que `exec` resuelva y ANTES
+ * de `stopSampler`, para no perder el máximo del final de la corrida. Es el
+ * número que soporta «sin OOM».
+ */
+async function takeFinalPageSample(result: SpikeResult): Promise<void> {
+  const st = sampler;
+  if (st === null) return;
+  window.clearTimeout(st.pageTimerId); // corta el muestreo periódico
+  const samplesBefore = st.pageSamples;
+  const rejectionsBefore = st.pageRejected;
+  let timedOut = false;
+  let timeoutId = 0;
+  const timeout = new Promise<void>((resolve) => {
+    timeoutId = window.setTimeout(() => {
+      timedOut = true;
+      resolve();
+    }, PAGE_FINAL_TIMEOUT_MS);
+  });
+  await Promise.race([takePageSample(st), timeout]);
+  window.clearTimeout(timeoutId);
+  if (st.pageSamples > samplesBefore) {
+    result.pageFinalBytes = st.lastPage;
+    result.pageFinalBreakdown = st.lastBreakdown;
+    result.pageFinalError = null;
+  } else {
+    result.pageFinalBytes = null;
+    result.pageFinalBreakdown = [];
+    result.pageFinalError = timedOut
+      ? `timeout de ${PAGE_FINAL_TIMEOUT_MS} ms esperando la medición UASM final`
+      : st.pageRejected > rejectionsBefore
+        ? (st.pageLastError ?? "measureUserAgentSpecificMemory rechazada")
+        : (st.pageErr ?? "sin medición UASM final");
   }
 }
 
@@ -508,34 +628,70 @@ function readMeasurement(res: UasmResponse): { bytes: number; breakdown: PageBre
   if (res instanceof ArrayBuffer) return { bytes: res.byteLength, breakdown: [] };
   if (typeof res !== "object" || res === null || typeof res.bytes !== "number") return null;
   const breakdown: PageBreakdownEntry[] = [];
-  if (Array.isArray(res.breakdown)) {
-    const entries: unknown[] = res.breakdown;
-    for (const entry of entries) {
-      if (typeof entry !== "object" || entry === null || !("bytes" in entry)) continue;
-      const rawUrl: unknown = "url" in entry ? entry.url : undefined;
-      const rawBytes: unknown = entry.bytes;
-      breakdown.push({
-        url: typeof rawUrl === "string" ? rawUrl : "(sin url)",
-        bytes: typeof rawBytes === "number" ? rawBytes : 0,
-      });
+  pushBreakdown(res.breakdown, "(sin url)", undefined, breakdown);
+  return { bytes: res.bytes, breakdown };
+}
+
+/**
+ * Aplana el `breakdown` de UASM. Chrome 156 devuelve entradas planas con
+ * `attribution: [{ scope, url }]` y `types: string[]`; se acepta también la
+ * forma antigua (`url` directo) y una eventual anidación (`breakdown` hijo).
+ */
+function pushBreakdown(entries: unknown, inheritedUrl: string, inheritedScope: string | undefined, out: PageBreakdownEntry[]): void {
+  if (!Array.isArray(entries)) return;
+  for (const item of entries) {
+    if (typeof item !== "object" || item === null || !("bytes" in item)) continue;
+    const rawBytes: unknown = item.bytes;
+    const bytes = typeof rawBytes === "number" ? rawBytes : 0;
+    let url = inheritedUrl;
+    let scope = inheritedScope;
+    const attr: unknown = "attribution" in item ? item.attribution : undefined;
+    if (Array.isArray(attr)) {
+      for (const a of attr) {
+        if (typeof a !== "object" || a === null) continue;
+        if ("url" in a && typeof a.url === "string" && a.url !== "") url = a.url;
+        if ("scope" in a && typeof a.scope === "string" && a.scope !== "") scope = a.scope;
+      }
+    } else if ("url" in item && typeof item.url === "string" && item.url !== "") {
+      url = item.url;
+    }
+    const types: string[] = [];
+    if ("types" in item && Array.isArray(item.types)) {
+      for (const t of item.types) if (typeof t === "string") types.push(t);
+    }
+    const child: unknown = "breakdown" in item ? item.breakdown : undefined;
+    if (Array.isArray(child) && child.length > 0) {
+      // El padre suele ser la suma de los hijos: se publican solo las hojas.
+      pushBreakdown(child, url, scope, out);
+    } else {
+      const entry: PageBreakdownEntry = { url, bytes };
+      if (scope !== undefined) entry.scope = scope;
+      if (types.length > 0) entry.types = types;
+      out.push(entry);
     }
   }
-  return { bytes: res.bytes, breakdown };
 }
 
 function updateRunUi(): void {
   const st = sampler;
   if (st === null || currentFixture === null) return;
-  const secs = (performance.now() - st.execStart) / 1000;
   const pct = lastProgress === null ? null : Math.round(lastProgress * 100);
   const pctText = pct === null ? "" : ` · ${pct}%`;
-  const pageText =
-    st.peakPage !== null && Number.isFinite(st.peakPage)
-      ? ` · página ${round2(st.peakPage / MB)} MB`
-      : "";
-  byId<HTMLElement>(`state-${currentFixture}`).textContent = `ejecutando ${secs.toFixed(1)}s${pctText}`;
+  const stateText = st.execLocked
+    ? "esperando medición UASM final…"
+    : `ejecutando ${((performance.now() - st.execStart) / 1000).toFixed(1)}s${pctText}`;
+  const uasmText =
+    st.lastPage !== null && Number.isFinite(st.lastPage)
+      ? ` · UASM ${round2(st.lastPage / MB)} MB (cada ${st.pageIntervalMs} ms)`
+      : " · UASM pendiente";
+  byId<HTMLElement>(`state-${currentFixture}`).textContent = stateText;
   byId<HTMLElement>(`detail-${currentFixture}`).textContent =
-    `heap JS ${round2(st.peakJs / MB)} MB${pageText} (cada ${TICK_MS} ms)`;
+    `heap JS ${round2(st.peakJs / MB)} MB (cota inferior)${uasmText}`;
+}
+
+/** Congela el reloj de `execMs` (llamar en cuanto `exec` resuelva). */
+function lockExecClock(): void {
+  if (sampler !== null) sampler.execLocked = true;
 }
 
 function pageMb(peak: number | null): number | null {
@@ -547,14 +703,19 @@ function tick(st: SamplerState): void {
   if (used > st.peakJs) st.peakJs = used;
   st.samples++;
   const r = st.result;
-  r.execMs = Math.round(performance.now() - st.execStart);
+  // Tras `exec` el reloj queda bloqueado: la espera de la medición UASM final
+  // (segundos) no debe contaminar `execMs`.
+  if (!st.execLocked) r.execMs = Math.round(performance.now() - st.execStart);
   r.peakJsHeapMB = round2(st.peakJs / MB);
   r.peakPageMemoryMB = pageMb(st.peakPage);
   r.pageBreakdown = st.peakBreakdown;
   r.pageMemoryError = st.pageErr;
+  r.pageSamples = st.pageSamples;
+  r.pageRejected = st.pageRejected;
+  r.pageFirstError = st.pageFirstError;
+  r.pageSampleIntervalMs = st.pageIntervalMs;
   r.memorySamples = st.samples;
-  if (st.samples % PAGE_MEM_TICKS === 1) void samplePageMemory(st);
-  if (st.samples % PAGE_MEM_TICKS === 0) {
+  if (st.samples % PERSIST_TICKS === 0) {
     persist();
     publish();
   }
@@ -564,17 +725,27 @@ function tick(st: SamplerState): void {
 function startSampler(result: SpikeResult): void {
   const st: SamplerState = {
     intervalId: 0,
+    pageTimerId: 0,
+    pagePromise: null,
+    pageIntervalMs: PAGE_MEM_START_MS,
     execStart: performance.now(),
+    execLocked: false,
     peakJs: perfExt.memory?.usedJSHeapSize ?? 0,
     peakPage: null,
     peakBreakdown: [],
+    lastPage: null,
+    lastBreakdown: [],
     samples: 0,
+    pageSamples: 0,
+    pageRejected: 0,
+    pageFirstError: null,
+    pageLastError: null,
     pageErr: null,
-    pagePending: false,
     result,
   };
   st.intervalId = window.setInterval(() => tick(st), TICK_MS);
   sampler = st;
+  schedulePageSample(st);
   tick(st);
 }
 
@@ -582,6 +753,7 @@ function stopSampler(result: SpikeResult): void {
   const st = sampler;
   if (st === null) return;
   window.clearInterval(st.intervalId);
+  window.clearTimeout(st.pageTimerId);
   sampler = null;
   const used = perfExt.memory?.usedJSHeapSize ?? 0;
   if (used > st.peakJs) st.peakJs = used;
@@ -590,6 +762,10 @@ function stopSampler(result: SpikeResult): void {
   result.peakPageMemoryMB = pageMb(st.peakPage);
   result.pageBreakdown = st.peakBreakdown;
   result.pageMemoryError = st.pageErr;
+  result.pageSamples = st.pageSamples;
+  result.pageRejected = st.pageRejected;
+  result.pageFirstError = st.pageFirstError;
+  result.pageSampleIntervalMs = st.pageIntervalMs;
   result.memorySamples = st.samples;
 }
 
@@ -660,9 +836,11 @@ function updateButtons(): void {
 }
 
 function writeMarker(r: SpikeResult, label: string): void {
-  const line = `RUN_DONE: ${label} ${r.outcome} exec=${r.execMs}ms mount=${Math.round(r.mountMs)}ms out=${r.outputBytes}B`;
+  const line = `RUN_DONE: ${label} ${r.outcome} exec=${Math.round(r.execMs)}ms mount=${round2(r.mountMs)}ms out=${r.outputBytes}B`;
   const div = document.createElement("div");
-  div.id = `marker-${label}`;
+  let markerId = `marker-${label}`;
+  if (document.getElementById(markerId) !== null) markerId = `${markerId}-${Date.now()}`;
+  div.id = markerId;
   div.textContent = line;
   byId<HTMLElement>("markers").appendChild(div);
 }
@@ -691,7 +869,9 @@ async function runFixture(fixtureId: string): Promise<void> {
   const encoder = info.encoder;
   const ext = encoder === "libopus" ? "webm" : "mp3";
   const outPath = `/output/audio.${ext}`;
-  const cbr = byId<HTMLInputElement>("cbr").checked;
+  // Comando de PRODUCCIÓN (ADR-02 / plan Task 6 Step 2): `-vbr off` siempre para
+  // libopus. El checkbox solo activa el diagnóstico con el comando literal VBR.
+  const literalVbr = encoder === "libopus" && byId<HTMLInputElement>("literal-vbr").checked;
   const args: string[] = [
     "-i", `/input/${file.name}`,
     "-vn",
@@ -700,9 +880,9 @@ async function runFixture(fixtureId: string): Promise<void> {
     "-c:a", encoder,
     "-b:a", encoder === "libopus" ? "24k" : "32k",
   ];
-  if (cbr && encoder === "libopus") args.push("-vbr", "off");
+  if (encoder === "libopus" && !literalVbr) args.push("-vbr", "off");
   args.push("-f", ext, outPath);
-  const label = cbr ? `${fixtureId}-cbr` : fixtureId;
+  const label = literalVbr ? `${fixtureId}-vbr` : `${fixtureId}-cbr`;
 
   const result: SpikeResult = {
     fixture: fixtureId,
@@ -722,6 +902,13 @@ async function runFixture(fixtureId: string): Promise<void> {
     peakJsHeapMB: 0,
     peakPageMemoryMB: null,
     pageBreakdown: [],
+    pageFinalBytes: null,
+    pageFinalBreakdown: [],
+    pageFinalError: null,
+    pageSamples: 0,
+    pageRejected: 0,
+    pageFirstError: null,
+    pageSampleIntervalMs: null,
     memorySamples: 0,
     pageMemoryError: null,
     logMessages: 0,
@@ -758,6 +945,7 @@ async function runFixture(fixtureId: string): Promise<void> {
     const logBefore = logPushCount;
     const exitCode = await ffmpeg.exec(args);
     result.execMs = performance.now() - tExec;
+    lockExecClock(); // el reloj no debe avanzar mientras esperamos la UASM final
     result.logMessages = logPushCount - logBefore;
     result.exitCode = exitCode;
     if (exitCode !== 0) throw new Error(`ffmpeg devolvió exit code ${exitCode}`);
@@ -778,6 +966,10 @@ async function runFixture(fixtureId: string): Promise<void> {
     setStatus(`${fixtureId}: ERROR — ${result.error}`);
     pushLog(`ERROR en ${fixtureId}: ${result.error}`);
   } finally {
+    // Medición UASM final: esperada tras `exec` y ANTES de parar el sampler
+    // (es el número que soporta «sin OOM»). Nunca lanza.
+    lockExecClock();
+    await takeFinalPageSample(result);
     stopSampler(result);
     running = false;
     currentFixture = null;
@@ -807,8 +999,15 @@ async function cleanAll(): Promise<void> {
   } catch {
     /* no existe */
   }
-  setStatus("limpio: montaje, directorio de salida y ficheros borrados");
-  pushLog("cleanup OK");
+  try {
+    // El montaje WORKERFS quedó en /input: se borra también el directorio
+    // (tolera que no exista).
+    await ffmpeg.deleteDir("/input");
+  } catch {
+    /* no existe */
+  }
+  setStatus("limpio: montaje, /input y /output borrados");
+  pushLog("cleanup OK (unmount + deleteDir /input y /output)");
 }
 
 async function switchCore(kind: CoreKind): Promise<void> {

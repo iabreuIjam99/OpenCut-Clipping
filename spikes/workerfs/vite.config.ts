@@ -61,5 +61,13 @@ export default defineConfig({
   preview: {
     port: 5175,
     strictPort: true,
+    // Mismo aislamiento de origen que `server`: sin COOP/COEP/CORP,
+    // `crossOriginIsolated` es false y `measureUserAgentSpecificMemory()`
+    // no puede ejecutarse en la vista previa.
+    headers: {
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Cross-Origin-Embedder-Policy": "require-corp",
+      "Cross-Origin-Resource-Policy": "cross-origin",
+    },
   },
 });
