@@ -63,20 +63,42 @@ cross-origin` en `server` **y** `preview` (necesarios para
    device) y decide si hay una GPU **no-NVIDIA** seleccionable para el
    botón 10. Deja `adapters` en el resultado.
 8. **«Timestamps de segmento (F2)»** — frases 01/03/08 y los 10 min con
-   `return_timestamps: true`: nº de segmentos, cobertura vs audio,
-   monoticidad, distribución de duraciones (mediana/p95), WER vs referencia
-   y vs la corrida sin timestamps, y fronteras contra los silencios reales
-   del WAV (±0.5 s / ±1.0 s). Deja `segmentSentences` y `segmentReport`.
+   `return_timestamps: true`: nº de segmentos, cobertura por **unión** de
+   intervalos vs audio + huecos ≥100 ms (`uncovered`), monoticidad,
+   distribución de duraciones (mediana/p95), **WER vs referencia (`werRef`,
+   la columna del veredicto)** y un **diagnóstico transcript-vs-transcript**
+   (`diagWerTranscriptVsTranscript`, no es vs referencia), y fronteras
+   contra los silencios reales del WAV (±0.5 s / ±1.0 s). Deja
+   `segmentSentences` y `segmentReport`.
 9. **«Chunking manual (F3)»** — ventanas de 30 s con solape de 5 s (la
    última alineada al final), transcripción independiente con timestamps de
    segmento (offset conocido si F2 fallara) y fusión por solape de texto
-   normalizado (exacto k ≥ 4, luego fuzzy ≤15 %); devuelve WER + S/D/I contra
-   la corrida baseline de 10 min. Deja `manualChunk`.
+   normalizado (`acc.concat(win.slice(k))`, exacto k ≥ 2, luego fuzzy ≤15 %);
+   devuelve WER + S/D/I contra la corrida baseline de 10 min. Deja
+   `manualChunk`.
 10. **«10 min en adaptador alternativo (F1)»** — solo tiene sentido si la
     sonda encontró una GPU no-NVIDIA: fuerza `navigator.gpu.requestAdapter`,
     limpia `env.webgpu.device`, recarga el pipeline y repite los 10 min sin
     timestamps. Si no la hay, deja un resultado `ERROR` con el motivo
     (evidencia machine-readable). Deja `forcedAdapter`.
+
+### Ronda 3 (F2–F4)
+
+11. **«Carga sin remoto (F4)»** — sonda en dos fases (corrida `load-local`):
+    **(a)** `local-only` **primero**, con `env.allowRemoteModels = false`,
+    `env.allowLocalModels = true` y `env.localModelPath = "/models/"` en un
+    contexto JS fresco (el caso más exigente: si la Cache API tiene los
+    ficheros, la carga no hace ninguna petición a huggingface.co/cdn-lfs);
+    **(b)** `warm-default` con los flags por defecto restaurados. Cuenta
+    peticiones a HF vía `PerformanceResourceTiming` y intentos a `/models/`
+    por fase; los flags se restauran al terminar. Deja `localLoad`
+    (`phases[]` + `alternatives`). El umbral < 3 s (R12) no se toca.
+
+Además, al **cargar la página** corre automáticamente el autochequeo F3
+(corrida `selfcheck`, sin inferencia): `findOverlap` + merge con
+`acc = "a b c d e"` + `win = "d e f g"` debe producir `"a b c d e f g"`
+(k=2 exacto) más un caso sin solape; se publica en `__WHISPER_RESULTS__`
+(`result.selfCheck.passed`).
 
 La «Cargar en caliente» de la Ronda 2 instala además hooks de medición
 (`loadBreakdown`): Cache API, `fetch`, estáticas de `AutoConfig`/
@@ -89,7 +111,9 @@ por URL) y un marcador `RUN_DONE: …` en la página.
 ## Automatización (hooks)
 
 - `window.__WHISPER_RESULTS__` — array JSON con todos los resultados
-  (`load-cold`, `load-warm`, `sentences-20`, `long-10min`, `wasm-fallback`):
+  (`load-cold`, `load-warm`, `sentences-20`, `long-10min`, `wasm-fallback`,
+  `adapters`, `segments`, `manual-chunk`, `long-10min-altgpu`, `selfcheck`,
+  `load-local`):
   `loadMs`, `execMs`, `rtf`, `wer` (normalizado + crudo + por frase),
   `timestamps` (cobertura, monotonía, muestra de 10 palabras), `downloads`
   (bytes transferidos/payload por host), `progressFiles`, `peakPageMemoryMB`,
@@ -130,7 +154,7 @@ nunca aporta `exec`/RTF/WER, se carga bajo demanda (`loadAltPipeline()`) y se
 | Archivo | Papel |
 |---|---|
 | `main.ts` | lógica del spike: sonda WebGPU, cargas fría/caliente, corridas de transcripción, WER, timestamps, muestreo UASM, UI |
-| `index.html` | página y controles (6 botones), paneles de entorno/modelo/log |
+| `index.html` | página y controles (11 botones), paneles de entorno/modelo/log |
 | `vite.config.ts` | headers COOP/COEP/CORP, puerto 5176 strict en `server` y `preview` |
 | `scripts/gen-audio.ps1` | corpus SAPI: 20 frases + `long-10min.wav` (540-660 s validados con `ffmpeg-static`) + `sentences.json` |
 | `fixtures/script.txt` | texto de referencia (original, CC0), 115 frases / 1431 palabras, una frase por línea |

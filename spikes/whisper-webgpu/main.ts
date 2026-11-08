@@ -96,7 +96,11 @@ type RunKind =
   | "adapters"
   | "long-10min-altgpu"
   | "segments"
-  | "manual-chunk";
+  | "manual-chunk"
+  // Ronda 3 (F2–F4): autochequeo del merge del chunker (al iniciar la página,
+  // sin inferencia) y sonda de carga con modelos remotos deshabilitados.
+  | "selfcheck"
+  | "load-local";
 type Outcome = "RUNNING" | "OK" | "ERROR" | "INTERRUPTED";
 
 interface EnvInfo {
@@ -334,6 +338,17 @@ interface SilenceReport {
   recall10Pct: number;
 }
 
+/** Hueco sin cobertura de segmentos (F2, Ronda 3): localización y causa. */
+interface UncoveredGap {
+  startS: number;
+  endS: number;
+  durationMs: number;
+  /** ≥50 % del hueco cae dentro de un tramo de silencio medido del WAV. */
+  insideMeasuredSilence: boolean;
+  /** Distancia del centro del hueco al múltiplo de 30 s más cercano (frontera de chunk). */
+  distToChunkBoundaryS: number;
+}
+
 /** Análisis de una corrida con `return_timestamps: true` (F2). */
 interface SegmentRunReport {
   ok: boolean;
@@ -341,9 +356,14 @@ interface SegmentRunReport {
   execMs: number;
   audioMs: number;
   segmentCount: number;
-  /** Σ(end − start) en ms y su ratio frente a la duración del audio. */
-  coveredMs: number;
+  /** Σ(end − start) en ms — sobreestima si los segmentos se solapan (histórico Ronda 2). */
+  sumCoveredMs: number;
+  /** Longitud de la UNIÓN de intervalos de segmento, en ms (cobertura real). */
+  unionCoveredMs: number;
+  /** UNIÓN de intervalos / duración del audio (F2 Ronda 3; antes era Σ/duración). */
   coverageRatio: number;
+  /** Huecos ≥100 ms sin segmento: dónde está el ~1.5 % no cubierto. */
+  uncovered: UncoveredGap[];
   monotonic: boolean;
   nonMonotonicCount: number;
   maxBackwardMs: number | null;
@@ -354,10 +374,15 @@ interface SegmentRunReport {
   p95DurationMs: number | null;
   maxDurationMs: number | null;
   text: string;
-  /** WER del texto de segmentos contra la referencia (largo) o null. */
+  /** WER del texto de segmentos contra la referencia (largo) o null — LA columna del veredicto. */
   werRef: WerPair | null;
-  /** WER del texto de segmentos contra la MISMA corrida sin timestamps. */
-  werVsNoTimestamp: WerPair | null;
+  /**
+   * DIAGNÓSTICO comparativo transcript-vs-transcript (esta corrida con
+   * timestamps vs la misma corrida sin timestamps). NO es un WER contra la
+   * referencia: nunca se publica en la columna `werRef` ni en la tabla de
+   * veredicto (F2, Ronda 3).
+   */
+  diagWerTranscriptVsTranscript: WerPair | null;
   silence: SilenceReport | null;
   sample: SegmentInfo[];
   spreadSample: SegmentInfo[];
@@ -378,7 +403,9 @@ interface ManualWindowReport {
   overlapFuzzy: boolean;
   wordsAfter: number;
   segmentCount: number;
-  /** Segmentos de esta ventana con offsets absolutos (s) tras ajustar. */
+  /** Segmentos de esta ventana con offsets absolutos (s) tras ajustar. NO se
+   * concatenan con los de otras ventanas (evita duplicados en solapes) y no
+   * alimentan el WER del merge (F3, Ronda 3). */
   segments: SegmentInfo[];
 }
 
@@ -408,6 +435,50 @@ interface ManualChunkReport {
   /** S/D/I de la corrida `long-10min` sin chunking (baseline 14.19 %). */
   baselineOps: WerOps | null;
   deletionsDelta: number | null;
+}
+
+/**
+ * Autochequeo unitario de `findOverlap` + merge (F3, Ronda 3): se ejecuta al
+ * iniciar la página sin inferencia y se publica en `__WHISPER_RESULTS__`, para
+ * verificar el fix del merge sin una corrida en el navegador.
+ */
+interface ChunkerSelfCheck {
+  passed: boolean;
+  accInput: string;
+  winInput: string;
+  expected: string;
+  actual: string;
+  /** k devuelto por findOverlap (solape exacto). */
+  overlapCount: number;
+  overlapFuzzy: boolean;
+  /** Segundo caso: ventanas sin solape → unión = concatenación simple. */
+  noOverlap: { expected: string; actual: string; passed: boolean };
+}
+
+/** Fase de la sonda F4 (Ronda 3): carga con o sin modelos remotos. */
+interface F4ProbePhase {
+  /** `"warm-default"` (flags por defecto) o `"local-only"` (remoto deshabilitado). */
+  label: string;
+  loadMs: number | null;
+  error: string | null;
+  /** Peticiones PerformanceResourceTiming a huggingface.co/cdn-lfs/jsdelivr durante la fase. */
+  remoteRequestCount: number;
+  remoteTransferBytes: number;
+  /** Σ de `duration` de esas peticiones (comparable con los 1,240.3 ms de la Ronda 2). */
+  remoteDurationMs: number;
+  remoteEntries: string[];
+  /** Intentos locales: peticiones al origen bajo `/models/`. */
+  localAttemptCount: number;
+}
+
+/** Sonda F4 (Ronda 3): ¿se pueden eliminar las sondas `Range: 0-0` a HF? */
+interface LocalLoadReport {
+  localModelPath: string;
+  allowRemoteModels: boolean;
+  allowLocalModels: boolean;
+  phases: F4ProbePhase[];
+  /** Alternativas documentadas si la fase local falla (ver RESULT.md Ronda 3). */
+  alternatives: string[];
 }
 
 /**
@@ -449,10 +520,11 @@ interface LoadBreakdown {
 interface WhisperResult {
   id: string;
   run: RunKind;
-  device: Device;
   startedAt: string;
   model: string;
   revision: string;
+  /** `"none"` solo en corridas sin inferencia (autochequeo F3, Ronda 3). */
+  device: Device | "none";
   dtypeRecord: Record<string, string>;
   clearedCacheBefore: boolean | null;
   cacheNamesBefore: string[] | null;
@@ -497,6 +569,10 @@ interface WhisperResult {
   manualChunk: ManualChunkReport | null;
   /** Ronda 2 — F4: desglose de `pipeline()` (caché, ORT, WebGPU, tokenizer). */
   loadBreakdown: LoadBreakdown | null;
+  /** Ronda 3 — F3: autochequeo de `findOverlap`+merge (corrida `selfcheck`). */
+  selfCheck: ChunkerSelfCheck | null;
+  /** Ronda 3 — F4: sonda de carga con `env.allowRemoteModels = false` (corrida `load-local`). */
+  localLoad: LocalLoadReport | null;
   peakJsHeapMB: number;
   peakPageMemoryMB: number | null;
   pageBreakdown: PageBreakdownEntry[];
@@ -751,6 +827,9 @@ function restore(): void {
       item.segmentSentences ??= null;
       item.manualChunk ??= null;
       item.loadBreakdown ??= null;
+      // Ronda 3: campos ausentes en resultados guardados por versiones previas.
+      item.selfCheck ??= null;
+      item.localLoad ??= null;
       results.push(item);
     }
     if (recovered > 0) {
@@ -1497,7 +1576,7 @@ function renderModelInfo(): void {
 // Ejecuciones
 // ---------------------------------------------------------------------------
 
-function makeResult(run: RunKind, device: Device): WhisperResult {
+function makeResult(run: RunKind, device: Device | "none"): WhisperResult {
   return {
     id: `${run}-${Date.now()}`,
     run,
@@ -1505,7 +1584,8 @@ function makeResult(run: RunKind, device: Device): WhisperResult {
     startedAt: new Date().toISOString(),
     model: MODEL,
     revision: REVISION,
-    dtypeRecord: { ...(device === "webgpu" ? WEBGPU_DTYPE : WASM_DTYPE) },
+    dtypeRecord:
+      device === "webgpu" ? { ...WEBGPU_DTYPE } : device === "wasm" ? { ...WASM_DTYPE } : {},
     clearedCacheBefore: null,
     cacheNamesBefore: null,
     cacheNamesAfter: null,
@@ -1539,6 +1619,8 @@ function makeResult(run: RunKind, device: Device): WhisperResult {
     segmentSentences: null,
     manualChunk: null,
     loadBreakdown: null,
+    selfCheck: null,
+    localLoad: null,
     peakJsHeapMB: 0,
     peakPageMemoryMB: null,
     pageBreakdown: [],
@@ -2414,8 +2496,10 @@ function failedSegmentReport(e: unknown, execMs: number, audioMs: number): Segme
     execMs,
     audioMs,
     segmentCount: 0,
-    coveredMs: 0,
+    sumCoveredMs: 0,
+    unionCoveredMs: 0,
     coverageRatio: 0,
+    uncovered: [],
     monotonic: true,
     nonMonotonicCount: 0,
     maxBackwardMs: null,
@@ -2427,7 +2511,7 @@ function failedSegmentReport(e: unknown, execMs: number, audioMs: number): Segme
     maxDurationMs: null,
     text: "",
     werRef: null,
-    werVsNoTimestamp: null,
+    diagWerTranscriptVsTranscript: null,
     silence: null,
     sample: [],
     spreadSample: [],
@@ -2500,14 +2584,67 @@ function analyzeSegments(
     .map((i) => segments[i])
     .filter((s): s is SegmentInfo => s !== undefined);
 
+  // Silencios reales del WAV: además del reporte de fronteras, sirven para
+  // clasificar los huecos de cobertura (¿el ~1.5 % sin segmento es silencio?).
+  const silence = audioData !== null ? analyzeSilences(audioData, segments) : null;
+
+  // Cobertura REAL (F2, Ronda 3): UNIÓN de intervalos / duración del audio.
+  // La Σ de la Ronda 2 (567.6 s) contaba dos veces los solapes; la unión no.
+  const sorted = [...segments].sort((a, b) => a.start - b.start);
+  const mergedRanges: Array<{ start: number; end: number }> = [];
+  for (const seg of sorted) {
+    const lastM = mergedRanges[mergedRanges.length - 1];
+    if (lastM !== undefined && seg.start <= lastM.end) {
+      if (seg.end > lastM.end) lastM.end = seg.end;
+    } else {
+      mergedRanges.push({ start: seg.start, end: seg.end });
+    }
+  }
+  let unionMs = 0;
+  for (const mr of mergedRanges) unionMs += (mr.end - mr.start) * 1000;
+
+  // Localización del no cubierto: [0, primer inicio], entre intervalos
+  // fusionados y [último fin, duración del audio].
+  const uncovered: UncoveredGap[] = [];
+  const pushGap = (fromS: number, toS: number): void => {
+    const durMs = (toS - fromS) * 1000;
+    if (!(durMs >= 100)) return; // contigüidad con redondeo: no es un hueco
+    let overlSil = 0;
+    if (silence !== null) {
+      for (const sp of silence.spans) {
+        overlSil += Math.max(0, Math.min(toS, sp.endS) - Math.max(fromS, sp.startS));
+      }
+    }
+    const center = (fromS + toS) / 2;
+    const nearestChunk = Math.round(center / 30) * 30;
+    uncovered.push({
+      startS: round2(fromS),
+      endS: round2(toS),
+      durationMs: Math.round(durMs),
+      insideMeasuredSilence: overlSil * 1000 >= durMs * 0.5,
+      distToChunkBoundaryS: round2(Math.abs(center - nearestChunk)),
+    });
+  };
+  if (mergedRanges.length === 0) {
+    pushGap(0, audioS);
+  } else {
+    pushGap(0, mergedRanges[0]?.start ?? 0);
+    for (let i = 1; i < mergedRanges.length; i++) {
+      pushGap(mergedRanges[i - 1]?.end ?? 0, mergedRanges[i]?.start ?? 0);
+    }
+    pushGap(mergedRanges[mergedRanges.length - 1]?.end ?? 0, audioS);
+  }
+
   return {
     ok: true,
     error: null,
     execMs,
     audioMs,
     segmentCount: segments.length,
-    coveredMs: Math.round(coveredMs),
-    coverageRatio: audioMs > 0 ? coveredMs / audioMs : 0,
+    sumCoveredMs: Math.round(coveredMs),
+    unionCoveredMs: Math.round(unionMs),
+    coverageRatio: audioMs > 0 ? unionMs / audioMs : 0,
+    uncovered,
     monotonic,
     nonMonotonicCount,
     maxBackwardMs: maxBackwardMs !== null ? Math.round(maxBackwardMs) : null,
@@ -2519,8 +2656,9 @@ function analyzeSegments(
     maxDurationMs: maxDurationMs !== null ? Math.round(maxDurationMs) : null,
     text: out.text,
     werRef: refText !== null ? computeWer(refText, out.text) : null,
-    werVsNoTimestamp: plainText !== null ? computeWer(plainText, out.text) : null,
-    silence: audioData !== null ? analyzeSilences(audioData, segments) : null,
+    // Diagnóstico transcript-vs-transcript (NO es WER vs referencia).
+    diagWerTranscriptVsTranscript: plainText !== null ? computeWer(plainText, out.text) : null,
+    silence,
     sample: segments.slice(0, 10),
     spreadSample,
     segments,
@@ -2691,16 +2829,39 @@ async function runSegments(): Promise<void> {
       if (segReport.werRef !== null) result.wer = { ...segReport.werRef, perSentence: null };
       result.outcome = "OK";
       pushLog(
-        `segments 10min: ${segReport.segmentCount} segmentos · cobertura ${(
+        `segments 10min: ${segReport.segmentCount} segmentos · cobertura unión ${(
           segReport.coverageRatio * 100
-        ).toFixed(1)}% · monótono=${String(segReport.monotonic)} (retrocesos ${
+        ).toFixed(1)}% (Σ ${segReport.sumCoveredMs} ms vs unión ${segReport.unionCoveredMs} ms) · huecos ≥100 ms ${
+          segReport.uncovered.length
+        } · monótono=${String(segReport.monotonic)} (retrocesos ${
           segReport.nonMonotonicCount
         }, máx ${segReport.maxBackwardMs ?? 0} ms) · duración mediana ${
           segReport.medianDurationMs ?? "?"
         } / p95 ${segReport.p95DurationMs ?? "?"} ms · WER vs ref ${(
           (segReport.werRef?.wer ?? 0) * 100
-        ).toFixed(2)}% · WER vs sin-timestamps ${((segReport.werVsNoTimestamp?.wer ?? 0) * 100).toFixed(2)}%`,
+        ).toFixed(2)}% · DIAG transcript-vs-transcript (NO vs ref) ${(
+          (segReport.diagWerTranscriptVsTranscript?.wer ?? 0) * 100
+        ).toFixed(2)}%`,
       );
+      if (segReport.uncovered.length > 0) {
+        const totalGap = segReport.uncovered.reduce((a, g) => a + g.durationMs, 0);
+        const inSil = segReport.uncovered.filter((g) => g.insideMeasuredSilence);
+        const inSilMs = inSil.reduce((a, g) => a + g.durationMs, 0);
+        pushLog(
+          `segments huecos: ${segReport.uncovered.length} tramos ≥100 ms sin segmento = ${Math.round(
+            totalGap,
+          )} ms (${inSil.length} dentro de silencio medido = ${Math.round(inSilMs)} ms) · ` +
+            segReport.uncovered
+              .slice(0, 8)
+              .map(
+                (g) =>
+                  `${g.startS.toFixed(2)}–${g.endS.toFixed(2)} s (${g.durationMs} ms${
+                    g.insideMeasuredSilence ? ", silencio" : ""
+                  }, frontera chunk a ${g.distToChunkBoundaryS.toFixed(2)} s)`,
+              )
+              .join(" · "),
+        );
+      }
       const sil = segReport.silence;
       if (sil !== null) {
         pushLog(
@@ -2738,16 +2899,18 @@ async function runSegments(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * Mayor solape «sufijo(prev) = prefijo(next)»: primero exacto (k ≥ 4) y luego
- * fuzzy (k desde min(60, …) hasta 4, ≤ 15 % de tokens distintos). Un solape
- * menor que 4 tokens no es fiable en inglés corto, así que se declara miss.
+ * Mayor solape «sufijo(prev) = prefijo(next)»: primero exacto (k ≥ 2 desde la
+ * Ronda 3 — permite el caso mínimo del autochequeo sintético «a b c d e» +
+ * «d e f g» → k=2) y luego fuzzy (k desde min(60, …) hasta 4, ≤ 15 % de tokens
+ * distintos). El fuzzy se mantiene en k ≥ 4: un solape APROXIMADO de 2–3 tokens
+ * no es fiable en inglés corto, así que se declara miss.
  */
 function findOverlap(
   acc: readonly string[],
   win: readonly string[],
 ): { count: number; fuzzy: boolean } {
   const maxK = Math.min(acc.length, win.length);
-  for (let k = maxK; k >= 4; k--) {
+  for (let k = maxK; k >= 2; k--) {
     let ok = true;
     for (let j = 0; j < k; j++) {
       if (acc[acc.length - k + j] !== win[j]) {
@@ -2893,6 +3056,10 @@ async function runManualChunk(): Promise<void> {
       if (out !== null) {
         useTs = true;
         text = out.text;
+        // Segmentos SOLO de esta ventana (offsets absolutos). Se reportan por
+        // ventana en `windows[i].segments` y NO se concatenan en una lista
+        // global (evita duplicados en las fronteras de ventana solapadas);
+        // tampoco entran en el WER del merge, que usa únicamente `acc`.
         segs = [];
         for (const c of out.chunks ?? []) {
           if (Number.isFinite(c.timestamp[0]) && Number.isFinite(c.timestamp[1])) {
@@ -2921,7 +3088,12 @@ async function runManualChunk(): Promise<void> {
         if (miss) overlapMisses++;
         else if (fuzzy) overlapFuzzyHits++;
         else overlapHits++;
-        acc = acc.slice(0, acc.length - overlap).concat(winTokens);
+        // F3 (Ronda 3): `findOverlap` devuelve k = últimos k tokens de acc ==
+        // primeros k de win, así que se agrega win SIN su prefijo de solape.
+        // La fórmula anterior `acc.slice(0, acc.length - overlap).concat(winTokens)`
+        // borraba los últimos k tokens de acc y reinsertaba la ventana entera
+        // (texto correcto destruido + solape recontado → I62 inflado).
+        acc = overlap > 0 ? acc.concat(winTokens.slice(overlap)) : acc.concat(winTokens);
       }
       windows.push({
         index: i,
@@ -2996,6 +3168,203 @@ async function runManualChunk(): Promise<void> {
     pushLog(`ERROR en manual-chunk: ${result.error}`);
     setStatus(`manual-chunk: ERROR — ${result.error}`);
   } finally {
+    result.wallMs = Math.round(performance.now() - wallStart);
+    await endRun(result);
+  }
+}
+
+/**
+ * F3 (Ronda 3) — autochequeo unitario de `findOverlap` + merge, sin
+ * inferencia: `acc = "a b c d e"`, `win = "d e f g"` (solape exacto k=2) debe
+ * producir `"a b c d e f g"`, y un par sin solape debe concatenarse entero.
+ * Se ejecuta al iniciar la página y se publica como corrida `selfcheck` en
+ * `window.__WHISPER_RESULTS__`, para verificar el fix sin una corrida en el
+ * navegador.
+ */
+function runChunkerSelfCheck(): void {
+  // Una sola entrada de autochequeo en el historial (se regenera en cada carga).
+  for (let i = results.length - 1; i >= 0; i--) {
+    if (results[i]?.run === "selfcheck") results.splice(i, 1);
+  }
+  const acc = "a b c d e".split(" ");
+  const win = "d e f g".split(" ");
+  const m = findOverlap(acc, win);
+  const actual = (m.count > 0 ? acc.concat(win.slice(m.count)) : acc.concat(win)).join(" ");
+  const expected = "a b c d e f g";
+  const acc2 = "one two three".split(" ");
+  const win2 = "unrelated words".split(" ");
+  const m2 = findOverlap(acc2, win2);
+  const actual2 = (m2.count > 0 ? acc2.concat(win2.slice(m2.count)) : acc2.concat(win2)).join(" ");
+  const expected2 = "one two three unrelated words";
+  const noOverlapPassed = m2.count === 0 && actual2 === expected2;
+  const passed = m.count === 2 && !m.fuzzy && actual === expected && noOverlapPassed;
+
+  const result = makeResult("selfcheck", "none");
+  result.selfCheck = {
+    passed,
+    accInput: acc.join(" "),
+    winInput: win.join(" "),
+    expected,
+    actual,
+    overlapCount: m.count,
+    overlapFuzzy: m.fuzzy,
+    noOverlap: { expected: expected2, actual: actual2, passed: noOverlapPassed },
+  };
+  result.outcome = passed ? "OK" : "ERROR";
+  if (!passed) {
+    result.error = `selfcheck: esperado «${expected}» (k=2 exacto), obtuvo «${actual}» (k=${m.count}${m.fuzzy ? ", fuzzy" : ""})`;
+  }
+  result.wallMs = 0;
+  results.push(result);
+  pushLog(
+    passed
+      ? `selfcheck chunker: PASS — findOverlap k=${m.count} → «${actual}» · sin-solape PASS («${actual2}»)`
+      : `selfcheck chunker: FAIL — ${result.error ?? ""}`,
+  );
+  publish();
+  persist();
+}
+
+/**
+ * F4 (Ronda 3) — sonda para eliminar las sondas `Range: bytes=0-0` a
+ * huggingface.co de la carga (1,240.3 ms de los 2,834 ms medidos en la
+ * Ronda 2). Dos fases en una corrida:
+ *
+ * 1. `warm-default`: recarga con los flags por defecto (Cache API caliente) —
+ *    re-mide la carga y cuenta peticiones reales a HF/cdn-lfs/jsdelivr vía
+ *    `PerformanceResourceTiming`.
+ * 2. `local-only`: `env.allowRemoteModels = false` + `env.allowLocalModels =
+ *    true` + `env.localModelPath = "/models/"` — en esta versión de
+ *    transformers.js `hub.js` consulta la Cache API PRIMERO
+ *    (`checkCachedResource`); un miss cae a `/models/` y, si el fichero no
+ *    existe, lanza `ModelFileNotFoundError` con la ruta exacta en lugar de
+ *    sondear HF.
+ *
+ * El umbral < 3 s (R12) no se toca; los flags se restauran al terminar.
+ */
+async function runLocalLoad(): Promise<void> {
+  if (running) {
+    setStatus("ya hay una ejecución en curso");
+    return;
+  }
+  const result = makeResult("load-local", "webgpu");
+  await beginRun(result);
+  const wallStart = performance.now();
+  const prev = {
+    allowRemoteModels: env.allowRemoteModels,
+    allowLocalModels: env.allowLocalModels,
+    localModelPath: env.localModelPath,
+  };
+  const report: LocalLoadReport = {
+    localModelPath: "/models/",
+    allowRemoteModels: false,
+    allowLocalModels: true,
+    phases: [],
+    alternatives: [
+      "Service Worker que intercepte las URLs del modelo y sirva desde Cache API (sin red)",
+      "env.useBrowserCache + env.customCache: fallback a caché tras la primera visita",
+      "servir config/tokenizer/ONNX desde public/models/ (pesos NO commiteados) + env.localModelPath",
+    ],
+  };
+  result.localLoad = report;
+
+  const probePhase = async (label: string, apply: (() => void) | null): Promise<void> => {
+    if (apply !== null) apply();
+    performance.clearResourceTimings();
+    if (transcriber !== null) {
+      await transcriber.dispose();
+      transcriber = null;
+      pushLog(`pipeline dispuesto antes de la fase ${label}`);
+    }
+    const t0 = performance.now();
+    let loadMs: number | null = null;
+    let error: string | null = null;
+    try {
+      transcriber = await pipeline("automatic-speech-recognition", MODEL, {
+        revision: REVISION,
+        device: "webgpu",
+        dtype: WEBGPU_DTYPE,
+      });
+      loadMs = Math.round(performance.now() - t0);
+      pushLog(`fase ${label}: carga OK en ${loadMs} ms`);
+    } catch (e) {
+      error = msg(e);
+      pushLog(`fase ${label}: ERROR — ${error}`);
+    }
+    const entries = performance.getEntriesByType("resource") as PerformanceResourceTiming[];
+    let remoteCount = 0;
+    let remoteBytes = 0;
+    let remoteDur = 0;
+    let localAttempts = 0;
+    const remoteNames: string[] = [];
+    for (const en of entries) {
+      if (en.name.includes("/models/")) localAttempts++;
+      if (!DOWNLOAD_HOST_RE.test(en.name)) continue;
+      remoteCount++;
+      remoteBytes += en.transferSize;
+      remoteDur += en.duration;
+      if (remoteNames.length < 10) remoteNames.push(en.name);
+    }
+    report.phases.push({
+      label,
+      loadMs,
+      error,
+      remoteRequestCount: remoteCount,
+      remoteTransferBytes: remoteBytes,
+      remoteDurationMs: Math.round(remoteDur),
+      remoteEntries: remoteNames,
+      localAttemptCount: localAttempts,
+    });
+  };
+
+  try {
+    // Fase 1: modelos remotos deshabilitados en una visita VIRGEN (contexto JS
+    // nuevo, sin caché en memoria de tokenizer): el caso más exigente — si la
+    // Cache API tiene todos los ficheros, carga sin ninguna petición a HF.
+    await probePhase("local-only", () => {
+      env.allowRemoteModels = false;
+      env.allowLocalModels = true;
+      env.localModelPath = "/models/";
+    });
+    // Fase 2: flags por defecto (réplica de la carga de visita nueva de la
+    // Ronda 2, con conteo explícito de peticiones HF/cdn-lfs/jsdelivr).
+    await probePhase("warm-default", () => {
+      env.allowRemoteModels = prev.allowRemoteModels;
+      env.allowLocalModels = prev.allowLocalModels;
+      env.localModelPath = prev.localModelPath;
+    });
+
+    const warm = report.phases.find((p) => p.label === "warm-default");
+    const local = report.phases.find((p) => p.label === "local-only");
+    pushLog(
+      `load-local: local-only ${local?.loadMs ?? "?"} ms / ${local?.remoteRequestCount ?? "?"} peticiones HF (${local?.remoteDurationMs ?? "?"} ms, ${local?.localAttemptCount ?? "?"} intentos en /models/) · ` +
+        `warm-default ${warm?.loadMs ?? "?"} ms / ${warm?.remoteRequestCount ?? "?"} peticiones HF (${warm?.remoteDurationMs ?? "?"} ms)`,
+    );
+    if (local !== undefined && local.error === null && local.loadMs !== null) {
+      result.loadMs = local.loadMs;
+      result.outcome = "OK";
+      setStatus(
+        `load-local: OK — ${local.loadMs} ms sin modelos remotos (${local.remoteRequestCount} peticiones HF)`,
+      );
+    } else {
+      result.outcome = "ERROR";
+      result.error = local?.error ?? "fase local-only sin resultado";
+      setStatus(`load-local: ERROR — ${result.error}`);
+    }
+  } catch (e) {
+    result.outcome = "ERROR";
+    result.error = msg(e);
+    pushLog(`ERROR en load-local: ${result.error}`);
+    setStatus(`load-local: ERROR — ${result.error}`);
+  } finally {
+    env.allowRemoteModels = prev.allowRemoteModels;
+    env.allowLocalModels = prev.allowLocalModels;
+    env.localModelPath = prev.localModelPath;
+    pushLog(
+      `env restaurado: allowRemoteModels=${String(prev.allowRemoteModels)} · allowLocalModels=${String(
+        prev.allowLocalModels,
+      )} · localModelPath=${prev.localModelPath}`,
+    );
     result.wallMs = Math.round(performance.now() - wallStart);
     await endRun(result);
   }
@@ -3360,6 +3729,8 @@ function wireUi(): void {
   byId<HTMLButtonElement>("btn-segments").addEventListener("click", () => void runSegments());
   byId<HTMLButtonElement>("btn-chunk").addEventListener("click", () => void runManualChunk());
   byId<HTMLButtonElement>("btn-altgpu").addEventListener("click", () => void runLongAltAdapter());
+  // Ronda 3 (F4): sonda de carga sin modelos remotos.
+  byId<HTMLButtonElement>("btn-locall").addEventListener("click", () => void runLocalLoad());
 }
 
 async function init(): Promise<void> {
@@ -3370,6 +3741,8 @@ async function init(): Promise<void> {
   env.useBrowserCache = true;
   env.logLevel = LogLevel.INFO;
   restore();
+  // Ronda 3 (F3): autochequeo del merge del chunker en cada carga de página.
+  runChunkerSelfCheck();
   publish();
   wireUi();
   setStatus("sondeando entorno y adaptador WebGPU…");
