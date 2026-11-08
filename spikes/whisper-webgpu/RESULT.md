@@ -360,9 +360,20 @@ y lo diferido viven en el bloque diferido de la cabecera (con owner y trigger):
 - **UASM:** dos mediciones finales de la Ronda 1 agotaron el cronómetro de
   60 s; en la Ronda 2 varias corridas tardaron ~30–60 s en la muestra final
   (el `exec` real está en `execMs`, no en `wallMs`).
-- **Caché caliente por encima de 2 s en visita nueva** (2.34–2.52 s en la
-  Ronda 1; 2.83 s instrumentada en la F4) — nice-to-have, desglose en la
-  Ronda 2; el umbral `< 2 s` no se tocó.
+- **Carga en caliente / visita nueva — estado final (Ronda 3, sin lectura
+  «apple-to-apple»):** misma sesión (caliente): **946–1,111 ms**; visita
+  nueva con flags por defecto: **1.96–2.12 s** (2.34–2.52 s en la Ronda 1;
+  2.83 s instrumentada en la F4 de la Ronda 2); visita nueva con
+  `allowRemoteModels=false` primero: **1.64–1.72 s con 0 peticiones a HF** —
+  **la única configuración que cumple el nice-to-have `< 2 s`** (el umbral
+  ratificado `< 3 s` = R12 se cumple en todas). **Caveat honesto:** solo
+  existe **una** medición limpia de visita nueva del camino instrumentado y
+  las comparaciones **no son apples-to-apples** — el 2.83 s de la Ronda 2
+  tenía 6 ficheros sin servir desde caché más overhead de hooks, y los
+  números de la Ronda 3 salen de un estado de caché más caliente y con una
+  sonda distinta; **no se presenta como una mejora neta**. Para la
+  validación final del controller se recomienda un protocolo uniforme: perfil
+  fresco, caché borrada, hooks idénticos y 3 repeticiones por configuración.
 - **Instrumentación con overhead:** el desglose F4 (2,834 ms) corre con hooks
   sobre Cache API/fetch/estáticas y queda por encima de los 2,344/2,516 ms
   sin instrumentar; usarlo para **proporciones**, no como nuevo baseline.
@@ -584,6 +595,13 @@ eso hace falta reconstruir). Un único commit:
 `findOverlap` acepta ahora solape **exacto con k ≥ 2** (el fuzzy sigue en
 k ≥ 4, ≤ 15 % de mismatch).
 
+> **Riesgo k ≥ 2 (documentado):** un solape exacto **coincidental** de 2
+> tokens («of the», «in the») podría sobrededuplicar y borrar palabras
+> legítimas. Mitigación: la búsqueda es de **k más largo a más corto** y el
+> fuzzy exige k ≥ 4; evidencia empírica: S19/D0/I62 **idénticos** antes/después
+> del cambio; cota: como mucho unos pocos tokens por ventana y solo con
+> matches exactos coincidentes.
+
 **Autochequeo (corrida `selfcheck`, se ejecuta en cada carga de página, sin
 inferencia, publicada en `window.__WHISPER_RESULTS__`):**
 `acc = "a b c d e"`, `win = "d e f g"` → `findOverlap` k=2 exacto →
@@ -650,6 +668,12 @@ entran en el WER del merge** — documentado en el código (F3, Ronda 3).
   (3) nunca interpolar dentro del hueco. El dato por corrida sale de
   `segmentReport.uncovered[]` (`startS/endS/durationMs/insideMeasuredSilence/
   distToChunkBoundaryS`).
+  **`cutInsideSilence` es un requisito del validador de cortes de clip
+  (Task 12/13), NO parte de este spike:** aquí no existe en el código; el
+  spike solo aporta el dato (`uncovered[]`). Regla a implementar allí:
+  preferir fronteras de segmento; si el corte pedido cae dentro de un hueco
+  medido como silencio, **no rechazarlo** — clamp al borde de segmento más
+  cercano y marcarlo; nunca interpolar.
 
 ## F5 — veredicto incondicional
 
