@@ -302,7 +302,7 @@ git commit -am "fix: CSP, devtools solo en dev y editor client-only"
 - Produces: informe `spikes/workerfs/RESULT.md` con GO/NO-GO y métricas.
 
 - [ ] **Step 1: Montar el fichero con WORKERFS** (nunca `writeFile`).
-- [ ] **Step 2: Extraer audio** con `-ac 1 -ar 16000 -c:a libopus -b:a 24k -f webm`.
+- [ ] **Step 2: Extraer audio** con `-ac 1 -ar 16000 -c:a libopus -b:a 24k -vbr off -f webm` (`-vbr off` es obligatorio: sin él el overshoot VBR da ~18 MB/h y rompe el umbral de ≤15 MB; medido en Task 6).
 - [ ] **Step 3: Probar con 500 MB, 2 GB y un fichero de 1 h.**
 - [ ] **Step 4: Medir** tiempo total, memoria pico y tamaño de salida; verificar que `libopus` existe. Si no, repetir con `libmp3lame -b:a 32k`.
 - [ ] **Step 5: Escribir `RESULT.md`.**

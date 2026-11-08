@@ -55,7 +55,7 @@
 | ID | Decisión | Alternativa descartada | Motivo |
 |---|---|---|---|
 | ADR-01 | El vídeo se monta con **WORKERFS**, nunca se copia al heap WASM | `writeFile(arrayBuffer)` | Límite duro de 2 GB y OOM desde ~400-800 MB |
-| ADR-02 | Audio **16 kHz mono, Opus 24 kbps** (fallback MP3 32 kbps) | WAV (115 MB/h) | 11 MB/h cabe en límites de proveedor |
+| ADR-02 | Audio **16 kHz mono, Opus 24 kbps con `-vbr off`** (fallback MP3 32 kbps) | WAV (115 MB/h) | 11 MB/h cabe en límites de proveedor |
 | ADR-03 | Transcripción **local por defecto** (WebGPU) | Groq como primario | $0 real, sin ToS ajenos, sin cuotas |
 | ADR-04 | Groq **solo opt-in con BYOK** | Clave del proyecto | Free tier es por organización: no escala |
 | ADR-05 | **Sin R2/D1 obligatorios**; D1 solo para contadores de cuota | R2 para el vídeo | 10 GB gratis se agotan con un usuario |
