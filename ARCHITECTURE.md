@@ -107,7 +107,7 @@ Solo aplica al modo nube. Se corta en segmentos de **30 min** (~5,4 MB a 24 kbps
 
 ### 4.4 Transcripción
 
-**Local (defecto):** `@huggingface/transformers` en un Web Worker, modelo `onnx-community/whisper-base` (subir a `whisper-small` si la GPU lo permite), `device: "webgpu"` con fallback a `wasm`, `chunk_length_s: 30`, `stride_length_s: 5`, `return_timestamps: "word"`. El modelo se cachea en IndexedDB.
+**Local (defecto):** `@huggingface/transformers` en un Web Worker, modelo `onnx-community/whisper-base` (subir a `whisper-small` si la GPU lo permite), revisión pinneada, `device: "webgpu"` con fallback a `wasm`, `chunk_length_s: 30`, `stride_length_s: 5`, **`return_timestamps: true` (segmentos)**. Los timestamps son obligatorios también para el troceado: sin ellos el merge long-form pierde bloques enteros (14,19 % de WER medido frente a 1,89 % con timestamps). El word-level (`return_timestamps: "word"`) exige un export ONNX con `cross_attentions` que el modelo pinneado no trae; queda diferido hasta resolver la licencia de `whisper-base_timestamped` o re-exportar el modelo. El modelo se cachea con la **Cache API** de transformers.js (~236 MB); la primera carga requiere red y el audio nunca sale del dispositivo. Medido en Task 7: 10 min en 42 s (RTF 0,074) con un adaptador NVIDIA Blackwell; el despliegue exige verificar RTF ≤ 0,31 en la clase de GPU objetivo (por debajo, fallback wasm o nube opt-in).
 
 **Nube (opt-in):** `POST /v1/transcribe` → Groq `whisper-large-v3-turbo`, `response_format: verbose_json`, `timestamp_granularities: ["word"]`.
 
@@ -134,7 +134,7 @@ Valores exactos:
 | Solapes | Prohibidos |
 | Orden | Ascendente por `start` |
 | Máximo de cortes | 20 |
-| Ajuste a palabra | ±750 ms |
+| Ajuste a frontera de segmento | ±500 ms (los segmentos de Whisper caen en pausas; word-level diferido) |
 | Duplicados | IoU > 0,8 → descartar |
 | Título | ≤ 80 caracteres, sin caracteres de control ni HTML |
 
@@ -295,8 +295,8 @@ features/
 
 ## 11. Supuestos a validar en el spike (Fase 1 de `plan.md`)
 
-1. WORKERFS extrae audio de un fichero de 2 GB en Chrome de escritorio sin OOM.
-2. El core de ffmpeg.wasm elegido incluye `libopus` (o se usa el fallback).
-3. Whisper-base WebGPU transcribe 10 min en menos de 3 min en hardware medio.
+1. ✅ **Validado (Task 6, GO):** WORKERFS extrae audio de un fichero de 2,31 GB en Chrome de escritorio sin OOM (pico UASM 28 MB; 1 h en 59,75 s; salida 11,90 MB con `-vbr off`).
+2. ✅ **Validado (Task 6, GO):** el core `@ffmpeg/core@0.12.10` single-thread incluye `libopus`; no hace falta el fallback MP3.
+3. ⚠️ **Parcial (Task 7):** Whisper-base WebGPU transcribe 10 min en **42 s** con timestamps de segmento (RTF 0,074) en un adaptador NVIDIA Blackwell; **hardware medio no medido**. Gate de despliegue: RTF ≤ 0,31 en la clase objetivo.
 4. El proxy de un multipart de 20 MB se mantiene por debajo de 10 ms de CPU.
 5. El coste real por 1 h de audio en Groq se corresponde con la cuota documentada.

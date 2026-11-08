@@ -316,12 +316,12 @@ git commit -am "fix: CSP, devtools solo en dev y editor client-only"
 **Files:** Create `spikes/whisper-webgpu/` con el mismo patrón.
 
 - [ ] **Step 1: Cargar `onnx-community/whisper-base` con `device: "webgpu"` y fallback `wasm`.**
-- [ ] **Step 2: Transcribir 10 min de audio de 16 kHz con `return_timestamps: "word"`.**
+- [ ] **Step 2: Transcribir 10 min de audio de 16 kHz con `return_timestamps: true` (segmentos).** El word-level exige un export con `cross_attentions` que el modelo pinneado no trae; queda diferido (ver Task 7, ronda 2).
 - [ ] **Step 3: Medir** tiempo, memoria y calidad (comparar 20 frases a mano).
-- [ ] **Step 4: Verificar** que el modelo se cachea y la segunda carga es < 2 s.
+- [ ] **Step 4: Verificar** que el modelo se cachea y la segunda carga es < 3 s en visita nueva (977 ms en la misma sesión).
 - [ ] **Step 5: Escribir `RESULT.md`.**
 
-**Aceptación (GO):** 10 min en < 3 min en GPU media; timestamps por palabra; WER aceptable; caché funcional.
+**Aceptación (GO):** 10 min en < 3 min en la GPU de referencia (medido 42 s con timestamps); timestamps de segmento monótonos y utilizables para cortes; WER ≤ 10 % (medido 1,89 %); caché funcional (0 bytes redescargados); sin crash. **NO-GO** → wasm/nube opt-in o modelo menor.
 
 ---
 
