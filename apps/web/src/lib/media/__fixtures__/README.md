@@ -30,3 +30,15 @@ descargado). Comando exacto, ejecutado desde `apps/web`:
 ```powershell
 D:\PROYECT\MonetizaClip\spikes\workerfs\node_modules\ffmpeg-static\ffmpeg.exe -y -hide_banner -nostdin -f lavfi -i sine=frequency=440:sample_rate=16000 -t 5 -ac 1 -c:a libopus -b:a 24k -vbr off -f webm "src\lib\media\__fixtures__\clip-5s-audio.webm"
 ```
+
+## `whisper-base-10s.json`
+
+Salida del pipeline ASR de `whisper-base` para 10 s de audio en español,
+**sintetizada a partir del formato documentado** de `AutomaticSpeechRecognitionOutput`
+(`{ text, chunks: [{ timestamp: [s, s|null], text }] }`; ver
+`@huggingface/transformers` y los ejemplos de `RESULT.md`), no capturada de una
+inferencia real. Se usa para justificar el mapeo de `toSegments` (Task 12, R5):
+3 `chunks`, el último con `timestamp[1] === null` (cierra en `durationMs`),
+textos con acentos y `text` = concatenación exacta de los `chunks`. Tiempos
+esperados con `durationMs = 10000`: `0–2840`, `2840–6420`, `6420–10000` ms
+(`Math.round(s * 1000)`).

@@ -14,3 +14,9 @@ coverage/
 # ffmpeg.wasm assets copiados por el plugin de vite en apps/web (generados, ~31 MB)
 apps/web/public/ffmpeg/
 apps/web/public/ffmpeg-core/
+
+# ONNX Runtime assets copiados por el plugin de vite en apps/web (Task 12, R2)
+apps/web/public/ort/
+
+# Pesos de whisper-base descargados por scripts/fetch-models.mjs (Task 12, R3, ~209 MB)
+apps/web/public/models/

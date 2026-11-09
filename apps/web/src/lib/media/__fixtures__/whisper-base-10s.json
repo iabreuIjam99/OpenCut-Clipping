@@ -1,0 +1,8 @@
+{
+  "text": " Buenas tardes. Esto es una prueba de transcripción local con Whisper.",
+  "chunks": [
+    { "timestamp": [0, 2.84], "text": " Buenas tardes." },
+    { "timestamp": [2.84, 6.42], "text": " Esto es una prueba de" },
+    { "timestamp": [6.42, null], "text": " transcripción local con Whisper." }
+  ]
+}

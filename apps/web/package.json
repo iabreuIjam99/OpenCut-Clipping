@@ -14,6 +14,7 @@
     "lint": "biome check .",
     "typecheck": "tsc --noEmit",
     "format": "biome format --write .",
+    "models:fetch": "bun scripts/fetch-models.mjs",
     "deploy": "bun run build && wrangler deploy"
   },
   "dependencies": {
@@ -24,6 +25,7 @@
     "@hookform/resolvers": "^5.2.2",
     "@hugeicons/core-free-icons": "^4.1.2",
     "@hugeicons/react": "^1.1.6",
+    "@huggingface/transformers": "4.3.2",
     "@tailwindcss/vite": "^4.1.18",
     "@tanstack/react-router": "1.170.46",
     "@tanstack/react-router-ssr-query": "1.167.3",
@@ -66,6 +68,7 @@
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^6.0.1",
     "@vitest/coverage-v8": "4.1.12",
+    "@webgpu/types": "0.1.74",
     "jsdom": "^28.1.0",
     "typescript": "6.0.3",
     "vite": "^8.0.0",

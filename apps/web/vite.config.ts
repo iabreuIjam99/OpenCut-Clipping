@@ -51,7 +51,38 @@ function copyFfmpegAssets(): void {
   }
 }
 
+/**
+ * Copies the ONNX Runtime Web assets into public/ so the transcription Worker
+ * (Task 12, R2) loads them LOCALLY at `/ort/*` — never from jsDelivr. The
+ * Worker points `env.backends.onnx.wasm.wasmPaths` at these exact paths before
+ * building the pipeline; if the files were missing, ORT would silently fall
+ * back to its CDN default, so this plugin fails loudly instead (same pattern
+ * as `copyFfmpegAssets`). The copies are generated and git-ignored.
+ */
+function copyOrtAssets(): void {
+  const wanted: ReadonlyArray<readonly [string, string]> = [
+    [
+      "onnxruntime-web/dist/ort-wasm-simd-threaded.asyncify.mjs",
+      "ort/ort-wasm-simd-threaded.asyncify.mjs",
+    ],
+    [
+      "onnxruntime-web/dist/ort-wasm-simd-threaded.asyncify.wasm",
+      "ort/ort-wasm-simd-threaded.asyncify.wasm",
+    ],
+  ]
+  for (const [from, to] of wanted) {
+    const src = resolve(here, "node_modules", from)
+    if (!existsSync(src)) {
+      throw new Error(`[ort-assets] falta ${from}; ejecuta bun install en apps/web`)
+    }
+    const dest = resolve(here, "public", to)
+    mkdirSync(dirname(dest), { recursive: true })
+    if (!existsSync(dest)) cpSync(src, dest)
+  }
+}
+
 copyFfmpegAssets()
+copyOrtAssets()
 
 const config = defineConfig({
   resolve: { tsconfigPaths: true },
