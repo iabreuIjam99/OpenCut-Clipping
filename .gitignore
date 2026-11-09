@@ -7,4 +7,6 @@ target/
 docs/
 
 # moon runtime cache
-.moon/cache/
+.monot/cache/
+
+coverage/
