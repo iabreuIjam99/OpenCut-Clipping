@@ -17,3 +17,16 @@ D:\PROYECT\MonetizaClip\spikes\workerfs\node_modules\ffmpeg-static\ffmpeg.exe -y
 Se commitea porque es la única forma de ejercitar `extractAudio` de punta a
 punta contra un contenedor real (el runtime de ffmpeg se inyecta falso en
 tests: jsdom no ejecuta WASM).
+
+## `clip-5s-audio.webm` (17 135 B < 40 KB)
+
+Audio de 5 s, Opus 24 kbps mono (sine de 440 Hz a 16 kHz), para ejercitar
+`probeMatroska` y el cortador `-c copy` de `chunkAudio` (Task 11) sobre un
+contenedor real (el runtime de ffmpeg se inyecta falso en tests: jsdom no
+ejecuta WASM). Se generó **una sola vez** con el binario `ffmpeg-static`
+pinneado en el spike de Task 6 (nunca con un ffmpeg del sistema ni
+descargado). Comando exacto, ejecutado desde `apps/web`:
+
+```powershell
+D:\PROYECT\MonetizaClip\spikes\workerfs\node_modules\ffmpeg-static\ffmpeg.exe -y -hide_banner -nostdin -f lavfi -i sine=frequency=440:sample_rate=16000 -t 5 -ac 1 -c:a libopus -b:a 24k -vbr off -f webm "src\lib\media\__fixtures__\clip-5s-audio.webm"
+```
