@@ -10,3 +10,7 @@ docs/
 .moon/cache/
 
 coverage/
+
+# ffmpeg.wasm assets copiados por el plugin de vite en apps/web (generados, ~31 MB)
+apps/web/public/ffmpeg/
+apps/web/public/ffmpeg-core/
