@@ -22,6 +22,7 @@ import {
   type MemoryProbeResult,
 } from "./measure-cpu";
 import { uploadOnce, type UploadOptions, type UploadResult } from "./upload";
+import { writeSummary } from "./summarize";
 
 const MB = 1_000_000;
 
@@ -997,6 +998,8 @@ async function main(): Promise<void> {
 
   await Bun.write("results/bench.json", JSON.stringify(output, null, 2));
   console.log("\n[bench] resultados en results/bench.json");
+  // Resumen agregado y versionado (results/bench.json está gitignored).
+  await writeSummary();
   sink.stop(true);
 }
 

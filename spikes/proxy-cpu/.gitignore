@@ -1,6 +1,7 @@
 node_modules/
 .wrangler/
 dist/
-results/
+results/*
+!results/bench-summary.json
 fixtures/
 *.log

@@ -1,10 +1,10 @@
 # RESULT — Spike proxy streaming (CPU) — Task 8
 
-**Veredicto: GO incondicional para el proxy mínimo (`fetch` puro) y GO incondicional
-para Elysia 1.4.30 con la ruta `POST /proxy` SIN `body` en el schema.** Ambos hacen
-streaming real (primer byte en el sink al 5,3 % / 5,2 % del envío), conservan el hash
-SHA-256 byte a byte, propagan 413/500, mantienen el **heap del isolate plano** (Δ pico
-**5 456 B / 5 624 B** con 20 MB y **5 456 B / 5 624 B** con 50 MB) y consumen
+**Veredicto: GO — todos los criterios de R7 medidos y cumplidos — para el proxy mínimo
+(`fetch` puro) y para Elysia 1.4.30 con la ruta `POST /proxy` SIN `body` en el schema.**
+Ambos hacen streaming real (primer byte en el sink al 5,3 % / 5,2 % del envío), conservan
+el hash SHA-256 byte a byte, propagan 413/500, mantienen el **heap del isolate plano**
+(Δ pico **5 456 B / 5 624 B** con 20 MB y **5 456 B / 5 624 B** con 50 MB) y consumen
 **≤ 2 muestras ≈ ≤ 1,17 ms de CPU p95** con 20 MB (muestras no-idle p50/p95/máx =
 0/1/2), muy por debajo del umbral de 8 ms.
 
@@ -218,9 +218,10 @@ ningún despliegue y **no queda nada desplegado**.
 ### 3.4 Memoria del isolate (heap) y RSS
 
 **Expectativa declarada antes de medir:** un proxy que **no** bufferea debe mostrar un
-Δ de heap de **pocos MB como máximo** con 20 MB (solo punteros y buffers del runtime);
-uno que **bufferee** mostraría **≈ el tamaño del cuerpo** (≈ 20 MB de Δ). Es la prueba
-más directa contra el buffering, más fuerte que “no hubo crash”.
+Δ de heap de **pocos MB como máximo** con 20 MB (en la práctica, KB, si solo hay punteros
+y buffers del runtime); uno que **bufferee** mostraría **≈ el tamaño del cuerpo**
+(≈ 20 MB de Δ). Es la prueba más directa contra el buffering, más fuerte que “no hubo
+crash”.
 
 `scripts/measure-cpu.ts#sampleMemoryDuringUpload` usa el mismo inspector CDP:
 
@@ -307,10 +308,10 @@ La columna “media” es la de la ronda 0 y se conserva para comparar.
 
 **Conclusión:** no hay pendiente de CPU JS medible con el sampler. Los dos tamaños que
 importan al producto caen en la misma cota que 1 MB y 20 MB: **5,4 MB (chunk de 30 min)
-≤ 1 muestra ≈ 0,58 ms** y **11,9 MB (1 h) ≤ 2 muestras ≈ 1,16–1,18 ms**, igual que
-50 MB. El proceso local sí crece (~3,4 ms/MB de 1 a 50 MB), pero es el stack de
-desarrollo (bundling + dev server + copias de loopback), no el handler. Un proxy de
-streaming puro se comporta como plano, que es la firma esperada.
+≤ 1 muestra (bajo la resolución del sampler: < 0,58 ms)** y **11,9 MB (1 h) ≤ 2 muestras
+≈ 1,16–1,18 ms**, igual que 50 MB. El proceso local sí crece (~3,4 ms/MB de 1 a 50 MB),
+pero es el stack de desarrollo (bundling + dev server + copias de loopback), no el
+handler. Un proxy de streaming puro se comporta como plano, que es la firma esperada.
 
 ---
 
@@ -370,9 +371,9 @@ en el titular.
 
 ### 7.3 Heap del isolate durante el stream (20 y 50 MB) — prueba de memoria
 
-Expectativa declarada antes de medir (§3.4): no-buffering → Δ de pocos KB/MB;
-buffering → Δ ≈ tamaño del cuerpo. Resultado (una subida dedicada por tamaño, heap
-muestreado cada 50 ms, 500 ms de asentamiento; `Runtime.getHeapUsage`):
+Expectativa declarada antes de medir (§3.4): no-buffering → Δ de pocos MB como máximo
+(en la práctica, KB); buffering → Δ ≈ tamaño del cuerpo. Resultado (una subida dedicada
+por tamaño, heap muestreado cada 50 ms, 500 ms de asentamiento; `Runtime.getHeapUsage`):
 
 | Impl | Tamaño | Ritmo | Muestras | `usedSize` base | Pico | Después | **Δ pico** | Δ después | `totalSize` |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -383,8 +384,8 @@ muestreado cada 50 ms, 500 ms de asentamiento; `Runtime.getHeapUsage`):
 
 **Comparación con la expectativa:** el Δ pico es **~3 700× menor** que el cuerpo de
 20 MB y **~9 200× menor** que el de 50 MB; un proxy que bufferease habría mostrado un Δ
-del orden de 20–50 MB (≈ 0,003 % del cuerpo vs ~100 %). El heap **no crece con el
-tamaño**: 20 MB y 50 MB dan el mismo Δ. En una corrida previa de la misma build, minimal
+del orden de 20–50 MB (≈ 0,03 % del cuerpo con 20 MB y ~0,01 % con 50 MB, frente a
+~100 % si bufferease). El heap **no crece con el tamaño**: 20 MB y 50 MB dan el mismo Δ. En una corrida previa de la misma build, minimal
 dio **5 440 B** (20 MB) y **13 308 B** (50 MB); el rango entre corridas es
 **5,4–13,3 KB**, siempre KB. `totalSize` es constante (3,5 MiB / 5,5 MiB), es decir, el
 runtime **no tuvo que expandir el heap**.
@@ -539,6 +540,13 @@ El bench arranca su propio sink (`:8798`) y sus propios `wrangler dev`; comprueb
 puertos antes de arrancar y **no mata procesos ajenos**. Al terminar escribe
 `results/bench.json` y `results/bench.log` (gitignored) y para todo.
 
+**Evidencia versionada:** las métricas agregadas que cita este documento están en
+[`results/bench-summary.json`](./results/bench-summary.json) (statuses, conteos de
+muestras, heap `usedSize` baseline/pico/Δ, bytes, SHA, primer/último byte, drift y
+calibración). Lo genera `scripts/summarize.ts` desde `results/bench.json` —gitignored
+porque contiene traces por chunk, muestras y frames— y `bench.ts` lo reescribe solo al
+final de cada corrida. Regenerar sin repetir la matriz: `bun run summary`.
+
 Variantes:
 
 ```powershell
@@ -625,8 +633,8 @@ mantiene plano**: Δ pico 5 456 B / 5 624 B con 20 y 50 MB, con `totalSize` cons
 decir, el isolate no retiene el cuerpo. Elysia 1.4.30 **conserva el streaming si la ruta
 no declara `body`**; el patrón de `apps/api` sirve, no hace falta un Worker dedicado.
 La única trampa es declarar `body: t.Any()`: consume el stream, devuelve 500 y entrega
-0 B. **GO incondicional para minimal y Elysia sin schema; NO-GO para la variante con
-schema.**
+0 B. **GO para minimal y Elysia sin schema — todos los criterios de R7 medidos y
+cumplidos; NO-GO para la variante con schema.**
 
 Dos matices que el GO asume explícitamente: el CPU medido es **solo JS** (cota
 inferior; el stream pumping nativo no está en el perfil) y **la ausencia de OOM en
@@ -665,7 +673,7 @@ el tamaño**. Detalle, RSS y método en §3.4 y §7.3.
 `Performance.enable`/`getMetrics` **no soportado** en workerd 2026-10-23 (documentado,
 sin sustituirlo por una cifra); RSS del árbol de 7 procesos como cota superior ruidosa.
 
-**Efecto en el veredicto:** el GO sigue siendo incondicional, pero ahora **cada criterio
+**Efecto en el veredicto:** el GO se mantiene, pero ahora **cada criterio
 R7 apunta a un número medido y a su método** (tabla del encabezado). La afirmación “sin
 OOM” **ya no se hace**: en su lugar está “heap acotado, sin buffering”, y el OOM en el
 edge real queda como **seguimiento de despliegue**.
@@ -733,8 +741,8 @@ bun run typecheck   # exit 0
 
 ### 13.7 Veredicto tras la corrección
 
-**GO incondicional para minimal y Elysia sin schema**, con criterios medidos: CPU
-≤ 2 muestras (≤ 1,17 ms, margen 6,8× sobre 8 ms), no-buffering (primer byte 5,3 %),
+**GO para minimal y Elysia sin schema — todos los criterios de R7 medidos y cumplidos**:
+CPU ≤ 2 muestras (≤ 1,17 ms, margen 6,8× sobre 8 ms), no-buffering (primer byte 5,3 %),
 integridad SHA, errores propagados y **heap acotado (Δ ≤ 13,3 KB con 20 y 50 MB)**.
 **NO-GO para `body: t.Any()`**. **“Sin OOM” ya no es un criterio del GO**: queda como
 verificación pendiente en un despliegue real.

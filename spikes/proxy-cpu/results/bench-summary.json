@@ -1,0 +1,1623 @@
+{
+  "schema": "proxy-cpu/bench-summary@1",
+  "generatedBy": {
+    "script": "spikes/proxy-cpu/scripts/summarize.ts",
+    "source": "results/bench.json",
+    "headAtGeneration": "1a0d3f5",
+    "headSubject": "spike(proxy-cpu): memoria del isolate, cota real de CPU y tamanos de produccion (task 8)",
+    "generatedAt": "2026-11-09T00:21:38.651Z"
+  },
+  "run": {
+    "startedAt": "2026-11-08T10:01:22.900Z",
+    "host": "IA99-MAINPC",
+    "platform": "win32",
+    "bun": "1.3.11",
+    "repeat": 20,
+    "reps": 3,
+    "idleWindows": 20,
+    "sinkPort": 8798,
+    "note": "CPU medida por CDP en workerd local; wrangler dev NO aplica el límite de 10 ms",
+    "mergedAt": "2026-11-08T10:01:22.902Z"
+  },
+  "notes": [
+    "results/bench.json está gitignored porque contiene traces por chunk, muestras de heap y frames de CPU; este fichero solo agrega las métricas que cita RESULT.md.",
+    "CPU cuantizada: nonIdleSamples son conteos enteros de muestras; cpuUs = conteo × intervalUs y upperBoundUs = max × intervalUs.",
+    "usedSize viene de Runtime.getHeapUsage (heap JS del isolate) durante una subida dedicada; no es RSS. El RSS se incluye solo como cota superior.",
+    "La sonda de memoria es por implementación, no por configuración: ver impls.<id>.memory.",
+    "Regenerar: `bun scripts/summarize.ts`; bench.ts lo reescribe al final de cada corrida."
+  ],
+  "calibration": {
+    "requestedIntervalUs": 100,
+    "impls": {
+      "minimal": {
+        "effectiveIntervalUs": 585.523,
+        "burnMs": 200,
+        "runs": 3,
+        "noiseFloor": {
+          "maxSamples": 0,
+          "boundUs": 585.523,
+          "note": "p50=p95=max=0 muestras en todas las configuraciones: ruido < 1 muestra"
+        }
+      },
+      "elysia": {
+        "effectiveIntervalUs": 590.227,
+        "burnMs": 200,
+        "runs": 3,
+        "noiseFloor": {
+          "maxSamples": 0,
+          "boundUs": 590.227,
+          "note": "p50=p95=max=0 muestras en todas las configuraciones: ruido < 1 muestra"
+        }
+      },
+      "elysia-schema": {
+        "effectiveIntervalUs": 586.994,
+        "burnMs": 200,
+        "runs": 3,
+        "noiseFloor": {
+          "maxSamples": 0,
+          "boundUs": 586.994,
+          "note": "p50=p95=max=0 muestras en todas las configuraciones: ruido < 1 muestra"
+        }
+      }
+    }
+  },
+  "impls": {
+    "minimal": {
+      "configs": {
+        "headline-20mb": {
+          "sizeMb": 20,
+          "chunkKb": 1024,
+          "rateMb": 0,
+          "multipart": true,
+          "expectedStatus": 200,
+          "requests": 60,
+          "repeat": 20,
+          "reps": 3,
+          "statuses": {
+            "200": 60
+          },
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 0,
+              "p95": 1,
+              "max": 2
+            },
+            "cpuUs": {
+              "p50": 0,
+              "p95": 585.523,
+              "max": 1171.047,
+              "mean": 165.898
+            },
+            "intervalUs": 585.523,
+            "upperBoundUs": 1171.046,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": null,
+            "cpuPerChunkUpperUs": null
+          },
+          "processCpuUsPerRequest": 96094,
+          "bytes": {
+            "sent": 20000176,
+            "received": 20000176,
+            "shaMatch": true
+          },
+          "timingMs": {
+            "firstByte": 21,
+            "lastByte": 128,
+            "uploadSpan": 16,
+            "sinkSpan": 123,
+            "maxGap": 10.782,
+            "wallP50": 146.4
+          },
+          "driftPct": 17.4
+        },
+        "scale-1mb": {
+          "sizeMb": 1,
+          "chunkKb": 1024,
+          "rateMb": 0,
+          "multipart": true,
+          "expectedStatus": 200,
+          "requests": 60,
+          "repeat": 20,
+          "reps": 3,
+          "statuses": {
+            "200": 60
+          },
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 0,
+              "p95": 1,
+              "max": 1
+            },
+            "cpuUs": {
+              "p50": 0,
+              "p95": 585.523,
+              "max": 585.523,
+              "mean": 136.622
+            },
+            "intervalUs": 585.523,
+            "upperBoundUs": 585.523,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": null,
+            "cpuPerChunkUpperUs": null
+          },
+          "processCpuUsPerRequest": 16406,
+          "bytes": {
+            "sent": 1000176,
+            "received": 1000176,
+            "shaMatch": true
+          },
+          "timingMs": {
+            "firstByte": 3,
+            "lastByte": 20,
+            "uploadSpan": 0,
+            "sinkSpan": 17,
+            "maxGap": 13.676,
+            "wallP50": 14.3
+          },
+          "driftPct": 99.18
+        },
+        "scale-5mb": {
+          "sizeMb": 5,
+          "chunkKb": 1024,
+          "rateMb": 0,
+          "multipart": true,
+          "expectedStatus": 200,
+          "requests": 60,
+          "repeat": 20,
+          "reps": 3,
+          "statuses": {
+            "200": 60
+          },
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 0,
+              "p95": 1,
+              "max": 1
+            },
+            "cpuUs": {
+              "p50": 0,
+              "p95": 585.523,
+              "max": 585.523,
+              "mean": 126.863
+            },
+            "intervalUs": 585.523,
+            "upperBoundUs": 585.523,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": null,
+            "cpuPerChunkUpperUs": null
+          },
+          "processCpuUsPerRequest": 50260,
+          "bytes": {
+            "sent": 5000176,
+            "received": 5000176,
+            "shaMatch": true
+          },
+          "timingMs": {
+            "firstByte": 5,
+            "lastByte": 42,
+            "uploadSpan": 3,
+            "sinkSpan": 40,
+            "maxGap": 9.409,
+            "wallP50": 49.1
+          },
+          "driftPct": 23.77
+        },
+        "scale-50mb": {
+          "sizeMb": 50,
+          "chunkKb": 1024,
+          "rateMb": 0,
+          "multipart": true,
+          "expectedStatus": 200,
+          "requests": 60,
+          "repeat": 20,
+          "reps": 3,
+          "statuses": {
+            "200": 60
+          },
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 0,
+              "p95": 1,
+              "max": 2
+            },
+            "cpuUs": {
+              "p50": 0,
+              "p95": 585.523,
+              "max": 1171.047,
+              "mean": 214.692
+            },
+            "intervalUs": 585.523,
+            "upperBoundUs": 1171.046,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": null,
+            "cpuPerChunkUpperUs": null
+          },
+          "processCpuUsPerRequest": 182031,
+          "bytes": {
+            "sent": 50000176,
+            "received": 50000176,
+            "shaMatch": true
+          },
+          "timingMs": {
+            "firstByte": 58,
+            "lastByte": 297,
+            "uploadSpan": 44,
+            "sinkSpan": 283,
+            "maxGap": 12.876,
+            "wallP50": 350.1
+          },
+          "driftPct": 13.93
+        },
+        "chunk-64kb": {
+          "sizeMb": 20,
+          "chunkKb": 64,
+          "rateMb": 0,
+          "multipart": true,
+          "expectedStatus": 200,
+          "requests": 60,
+          "repeat": 20,
+          "reps": 3,
+          "statuses": {
+            "200": 60
+          },
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 0,
+              "p95": 1,
+              "max": 2
+            },
+            "cpuUs": {
+              "p50": 0,
+              "p95": 585.523,
+              "max": 1171.047,
+              "mean": 224.451
+            },
+            "intervalUs": 585.523,
+            "upperBoundUs": 1171.046,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": null,
+            "cpuPerChunkUpperUs": null
+          },
+          "processCpuUsPerRequest": 93750,
+          "bytes": {
+            "sent": 20000176,
+            "received": 20000176,
+            "shaMatch": true
+          },
+          "timingMs": {
+            "firstByte": 29,
+            "lastByte": 164,
+            "uploadSpan": 24,
+            "sinkSpan": 159,
+            "maxGap": 20.243,
+            "wallP50": 149.7
+          },
+          "driftPct": 22.29
+        },
+        "chunk-4mb": {
+          "sizeMb": 20,
+          "chunkKb": 4096,
+          "rateMb": 0,
+          "multipart": true,
+          "expectedStatus": 200,
+          "requests": 60,
+          "repeat": 20,
+          "reps": 3,
+          "statuses": {
+            "200": 60
+          },
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 0,
+              "p95": 1.05,
+              "max": 2
+            },
+            "cpuUs": {
+              "p50": 0,
+              "p95": 614.799,
+              "max": 1171.047,
+              "mean": 185.416
+            },
+            "intervalUs": 585.523,
+            "upperBoundUs": 1171.046,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": null,
+            "cpuPerChunkUpperUs": null
+          },
+          "processCpuUsPerRequest": 91146,
+          "bytes": {
+            "sent": 20000176,
+            "received": 20000176,
+            "shaMatch": true
+          },
+          "timingMs": {
+            "firstByte": 18,
+            "lastByte": 105,
+            "uploadSpan": 13,
+            "sinkSpan": 100,
+            "maxGap": 11.014,
+            "wallP50": 144.7
+          },
+          "driftPct": 30.67
+        },
+        "octet-20mb": {
+          "sizeMb": 20,
+          "chunkKb": 1024,
+          "rateMb": 0,
+          "multipart": false,
+          "expectedStatus": 200,
+          "requests": 60,
+          "repeat": 20,
+          "reps": 3,
+          "statuses": {
+            "200": 60
+          },
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 0,
+              "p95": 1,
+              "max": 2
+            },
+            "cpuUs": {
+              "p50": 0,
+              "p95": 585.523,
+              "max": 1171.047,
+              "mean": 156.14
+            },
+            "intervalUs": 585.523,
+            "upperBoundUs": 1171.046,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": null,
+            "cpuPerChunkUpperUs": null
+          },
+          "processCpuUsPerRequest": 90365,
+          "bytes": {
+            "sent": 20000000,
+            "received": 20000000,
+            "shaMatch": true
+          },
+          "timingMs": {
+            "firstByte": 19,
+            "lastByte": 148,
+            "uploadSpan": 14,
+            "sinkSpan": 143,
+            "maxGap": 18.097,
+            "wallP50": 151.1
+          },
+          "driftPct": 20.17
+        },
+        "error-413": {
+          "sizeMb": 1,
+          "chunkKb": 1024,
+          "rateMb": 0,
+          "multipart": true,
+          "expectedStatus": 413,
+          "requests": 3,
+          "repeat": 1,
+          "reps": 3,
+          "statuses": {
+            "413": 3
+          },
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuUs": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0,
+              "mean": 0
+            },
+            "intervalUs": 0,
+            "upperBoundUs": 0,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": 0,
+            "cpuPerChunkUpperUs": 0
+          },
+          "processCpuUsPerRequest": null,
+          "bytes": {
+            "sent": 1000176,
+            "received": 1000176,
+            "shaMatch": true
+          },
+          "timingMs": {
+            "firstByte": 5,
+            "lastByte": 8,
+            "uploadSpan": 0,
+            "sinkSpan": 3,
+            "maxGap": 1.862,
+            "wallP50": 0
+          },
+          "driftPct": 99.22
+        },
+        "error-500": {
+          "sizeMb": 1,
+          "chunkKb": 1024,
+          "rateMb": 0,
+          "multipart": true,
+          "expectedStatus": 500,
+          "requests": 3,
+          "repeat": 1,
+          "reps": 3,
+          "statuses": {
+            "500": 3
+          },
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuUs": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0,
+              "mean": 0
+            },
+            "intervalUs": 0,
+            "upperBoundUs": 0,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": null,
+            "cpuPerChunkUpperUs": null
+          },
+          "processCpuUsPerRequest": null,
+          "bytes": {
+            "sent": 1000176,
+            "received": 1000176,
+            "shaMatch": true
+          },
+          "timingMs": {
+            "firstByte": 2,
+            "lastByte": 5,
+            "uploadSpan": 0,
+            "sinkSpan": 3,
+            "maxGap": 2.125,
+            "wallP50": 0
+          },
+          "driftPct": 99.18
+        },
+        "throttled-20mb": {
+          "sizeMb": 20,
+          "chunkKb": 1024,
+          "rateMb": 2,
+          "multipart": true,
+          "expectedStatus": 200,
+          "requests": 3,
+          "repeat": 1,
+          "reps": 3,
+          "statuses": {
+            "200": 3
+          },
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuUs": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0,
+              "mean": 0
+            },
+            "intervalUs": 0,
+            "upperBoundUs": 0,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": null,
+            "cpuPerChunkUpperUs": null
+          },
+          "processCpuUsPerRequest": null,
+          "bytes": {
+            "sent": 20000176,
+            "received": 20000176,
+            "shaMatch": true
+          },
+          "timingMs": {
+            "firstByte": 526,
+            "lastByte": 1,
+            "uploadSpan": 9972,
+            "sinkSpan": 9447,
+            "maxGap": 542.425,
+            "wallP50": 0
+          },
+          "driftPct": 5.24
+        },
+        "client-abort": {
+          "sizeMb": 20,
+          "chunkKb": 1024,
+          "rateMb": 2,
+          "multipart": true,
+          "expectedStatus": 200,
+          "requests": 1,
+          "repeat": 1,
+          "reps": 1,
+          "statuses": {},
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuUs": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0,
+              "mean": 0
+            },
+            "intervalUs": 0,
+            "upperBoundUs": 0,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": null,
+            "cpuPerChunkUpperUs": null
+          },
+          "processCpuUsPerRequest": null,
+          "bytes": {
+            "sent": 3145862,
+            "received": 3145862,
+            "shaMatch": false
+          },
+          "timingMs": {
+            "firstByte": -1,
+            "lastByte": -1,
+            "uploadSpan": 1056,
+            "sinkSpan": 0,
+            "maxGap": 0,
+            "wallP50": 0
+          },
+          "driftPct": 100
+        },
+        "scale-5.4mb": {
+          "sizeMb": 5.4,
+          "chunkKb": 1024,
+          "rateMb": 0,
+          "multipart": true,
+          "expectedStatus": 200,
+          "requests": 60,
+          "repeat": 20,
+          "reps": 3,
+          "statuses": {
+            "200": 60
+          },
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 0,
+              "p95": 1,
+              "max": 1
+            },
+            "cpuUs": {
+              "p50": 0,
+              "p95": 581.052,
+              "max": 581.052,
+              "mean": 125.895
+            },
+            "intervalUs": 581.052,
+            "upperBoundUs": 581.052,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": 107.602,
+            "cpuPerChunkUpperUs": 96.842
+          },
+          "processCpuUsPerRequest": 48177,
+          "bytes": {
+            "sent": 5400176,
+            "received": 5400176,
+            "shaMatch": true
+          },
+          "timingMs": {
+            "firstByte": 10,
+            "lastByte": 39,
+            "uploadSpan": 6,
+            "sinkSpan": 35,
+            "maxGap": 9.894,
+            "wallP50": 52.8
+          },
+          "driftPct": 32.04
+        },
+        "scale-11.9mb": {
+          "sizeMb": 11.9,
+          "chunkKb": 1024,
+          "rateMb": 0,
+          "multipart": true,
+          "expectedStatus": 200,
+          "requests": 60,
+          "repeat": 20,
+          "reps": 3,
+          "statuses": {
+            "200": 60
+          },
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 0,
+              "p95": 1.05,
+              "max": 2
+            },
+            "cpuUs": {
+              "p50": 0,
+              "p95": 610.104,
+              "max": 1162.104,
+              "mean": 193.684
+            },
+            "intervalUs": 581.052,
+            "upperBoundUs": 1162.104,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": 51.269,
+            "cpuPerChunkUpperUs": 50.842
+          },
+          "processCpuUsPerRequest": 72656,
+          "bytes": {
+            "sent": 11900176,
+            "received": 11900176,
+            "shaMatch": true
+          },
+          "timingMs": {
+            "firstByte": 12,
+            "lastByte": 94,
+            "uploadSpan": 9,
+            "sinkSpan": 91,
+            "maxGap": 21.507,
+            "wallP50": 86.2
+          },
+          "driftPct": 17.52
+        }
+      },
+      "memory": [
+        {
+          "sizeMb": 20,
+          "rateMb": 2,
+          "method": {
+            "cdpMethod": "Runtime.getHeapUsage",
+            "sampleIntervalMs": 50,
+            "settleMs": 500,
+            "crossCheck": "Performance.getMetrics no soportado en workerd 2026-10-23"
+          },
+          "samples": 158,
+          "usedSize": {
+            "baseline": 1077600,
+            "peak": 1083056,
+            "after": 1083056,
+            "peakDelta": 5456,
+            "afterDelta": 5456,
+            "totalSize": 3670016
+          },
+          "upload": {
+            "status": 200,
+            "sentBytes": 20000176,
+            "wallMs": 10023
+          },
+          "rss": {
+            "beforeBytes": 496320512,
+            "afterBytes": 511541248,
+            "deltaBytes": 15220736,
+            "peakBeforeBytes": 591462400,
+            "peakAfterBytes": 602767360,
+            "processCount": 7
+          },
+          "notes": [
+            "Performance.enable no soportado en este workerd",
+            "Performance.getMetrics no devolvió métricas"
+          ]
+        },
+        {
+          "sizeMb": 50,
+          "rateMb": 5,
+          "method": {
+            "cdpMethod": "Runtime.getHeapUsage",
+            "sampleIntervalMs": 50,
+            "settleMs": 500,
+            "crossCheck": "Performance.getMetrics no soportado en workerd 2026-10-23"
+          },
+          "samples": 159,
+          "usedSize": {
+            "baseline": 1083056,
+            "peak": 1088512,
+            "after": 1088512,
+            "peakDelta": 5456,
+            "afterDelta": 5456,
+            "totalSize": 3670016
+          },
+          "upload": {
+            "status": 200,
+            "sentBytes": 50000176,
+            "wallMs": 10011
+          },
+          "rss": {
+            "beforeBytes": 511541248,
+            "afterBytes": 520507392,
+            "deltaBytes": 8966144,
+            "peakBeforeBytes": 602767360,
+            "peakAfterBytes": 613011456,
+            "processCount": 7
+          },
+          "notes": [
+            "Performance.enable no soportado en este workerd",
+            "Performance.getMetrics no devolvió métricas"
+          ]
+        }
+      ]
+    },
+    "elysia": {
+      "configs": {
+        "headline-20mb": {
+          "sizeMb": 20,
+          "chunkKb": 1024,
+          "rateMb": 0,
+          "multipart": true,
+          "expectedStatus": 200,
+          "requests": 60,
+          "repeat": 20,
+          "reps": 3,
+          "statuses": {
+            "200": 60
+          },
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 0,
+              "p95": 1.05,
+              "max": 2
+            },
+            "cpuUs": {
+              "p50": 0,
+              "p95": 619.739,
+              "max": 1180.455,
+              "mean": 236.091
+            },
+            "intervalUs": 590.227,
+            "upperBoundUs": 1180.454,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": null,
+            "cpuPerChunkUpperUs": null
+          },
+          "processCpuUsPerRequest": 100781,
+          "bytes": {
+            "sent": 20000176,
+            "received": 20000176,
+            "shaMatch": true
+          },
+          "timingMs": {
+            "firstByte": 19,
+            "lastByte": 127,
+            "uploadSpan": 15,
+            "sinkSpan": 123,
+            "maxGap": 13.168,
+            "wallP50": 145.7
+          },
+          "driftPct": 20.67
+        },
+        "scale-1mb": {
+          "sizeMb": 1,
+          "chunkKb": 1024,
+          "rateMb": 0,
+          "multipart": true,
+          "expectedStatus": 200,
+          "requests": 60,
+          "repeat": 20,
+          "reps": 3,
+          "statuses": {
+            "200": 60
+          },
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 0,
+              "p95": 1,
+              "max": 1
+            },
+            "cpuUs": {
+              "p50": 0,
+              "p95": 590.227,
+              "max": 590.227,
+              "mean": 186.905
+            },
+            "intervalUs": 590.227,
+            "upperBoundUs": 590.227,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": null,
+            "cpuPerChunkUpperUs": null
+          },
+          "processCpuUsPerRequest": 24219,
+          "bytes": {
+            "sent": 1000176,
+            "received": 1000176,
+            "shaMatch": true
+          },
+          "timingMs": {
+            "firstByte": 3,
+            "lastByte": 6,
+            "uploadSpan": 0,
+            "sinkSpan": 3,
+            "maxGap": 0.989,
+            "wallP50": 15.4
+          },
+          "driftPct": 99.18
+        },
+        "scale-5mb": {
+          "sizeMb": 5,
+          "chunkKb": 1024,
+          "rateMb": 0,
+          "multipart": true,
+          "expectedStatus": 200,
+          "requests": 60,
+          "repeat": 20,
+          "reps": 3,
+          "statuses": {
+            "200": 60
+          },
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 0,
+              "p95": 1,
+              "max": 1
+            },
+            "cpuUs": {
+              "p50": 0,
+              "p95": 590.227,
+              "max": 590.227,
+              "mean": 206.58
+            },
+            "intervalUs": 590.227,
+            "upperBoundUs": 590.227,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": null,
+            "cpuPerChunkUpperUs": null
+          },
+          "processCpuUsPerRequest": 40365,
+          "bytes": {
+            "sent": 5000176,
+            "received": 5000176,
+            "shaMatch": true
+          },
+          "timingMs": {
+            "firstByte": 4,
+            "lastByte": 36,
+            "uploadSpan": 2,
+            "sinkSpan": 34,
+            "maxGap": 10.717,
+            "wallP50": 52
+          },
+          "driftPct": 42.97
+        },
+        "scale-50mb": {
+          "sizeMb": 50,
+          "chunkKb": 1024,
+          "rateMb": 0,
+          "multipart": true,
+          "expectedStatus": 200,
+          "requests": 60,
+          "repeat": 20,
+          "reps": 3,
+          "statuses": {
+            "200": 60
+          },
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 0,
+              "p95": 1,
+              "max": 2
+            },
+            "cpuUs": {
+              "p50": 0,
+              "p95": 590.227,
+              "max": 1180.455,
+              "mean": 137.72
+            },
+            "intervalUs": 590.227,
+            "upperBoundUs": 1180.454,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": null,
+            "cpuPerChunkUpperUs": null
+          },
+          "processCpuUsPerRequest": 197396,
+          "bytes": {
+            "sent": 50000176,
+            "received": 50000176,
+            "shaMatch": true
+          },
+          "timingMs": {
+            "firstByte": 59,
+            "lastByte": 235,
+            "uploadSpan": 43,
+            "sinkSpan": 219,
+            "maxGap": 17.831,
+            "wallP50": 357.7
+          },
+          "driftPct": 21.28
+        },
+        "chunk-64kb": {
+          "sizeMb": 20,
+          "chunkKb": 64,
+          "rateMb": 0,
+          "multipart": true,
+          "expectedStatus": 200,
+          "requests": 60,
+          "repeat": 20,
+          "reps": 3,
+          "statuses": {
+            "200": 60
+          },
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 0,
+              "p95": 1,
+              "max": 1
+            },
+            "cpuUs": {
+              "p50": 0,
+              "p95": 590.227,
+              "max": 590.227,
+              "mean": 157.394
+            },
+            "intervalUs": 590.227,
+            "upperBoundUs": 590.227,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": null,
+            "cpuPerChunkUpperUs": null
+          },
+          "processCpuUsPerRequest": 89323,
+          "bytes": {
+            "sent": 20000176,
+            "received": 20000176,
+            "shaMatch": true
+          },
+          "timingMs": {
+            "firstByte": 28,
+            "lastByte": 95,
+            "uploadSpan": 23,
+            "sinkSpan": 90,
+            "maxGap": 7.241,
+            "wallP50": 148.1
+          },
+          "driftPct": 21.07
+        },
+        "chunk-4mb": {
+          "sizeMb": 20,
+          "chunkKb": 4096,
+          "rateMb": 0,
+          "multipart": true,
+          "expectedStatus": 200,
+          "requests": 60,
+          "repeat": 20,
+          "reps": 3,
+          "statuses": {
+            "200": 60
+          },
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 0,
+              "p95": 1,
+              "max": 1
+            },
+            "cpuUs": {
+              "p50": 0,
+              "p95": 590.227,
+              "max": 590.227,
+              "mean": 137.72
+            },
+            "intervalUs": 590.227,
+            "upperBoundUs": 590.227,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": null,
+            "cpuPerChunkUpperUs": null
+          },
+          "processCpuUsPerRequest": 99740,
+          "bytes": {
+            "sent": 20000176,
+            "received": 20000176,
+            "shaMatch": true
+          },
+          "timingMs": {
+            "firstByte": 17,
+            "lastByte": 172,
+            "uploadSpan": 12,
+            "sinkSpan": 167,
+            "maxGap": 19.982,
+            "wallP50": 155.1
+          },
+          "driftPct": 21.33
+        },
+        "octet-20mb": {
+          "sizeMb": 20,
+          "chunkKb": 1024,
+          "rateMb": 0,
+          "multipart": false,
+          "expectedStatus": 200,
+          "requests": 60,
+          "repeat": 20,
+          "reps": 3,
+          "statuses": {
+            "200": 60
+          },
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 0,
+              "p95": 1.05,
+              "max": 2
+            },
+            "cpuUs": {
+              "p50": 0,
+              "p95": 619.739,
+              "max": 1180.455,
+              "mean": 157.394
+            },
+            "intervalUs": 590.227,
+            "upperBoundUs": 1180.454,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": null,
+            "cpuPerChunkUpperUs": null
+          },
+          "processCpuUsPerRequest": 100000,
+          "bytes": {
+            "sent": 20000000,
+            "received": 20000000,
+            "shaMatch": true
+          },
+          "timingMs": {
+            "firstByte": 19,
+            "lastByte": 95,
+            "uploadSpan": 14,
+            "sinkSpan": 90,
+            "maxGap": 11.398,
+            "wallP50": 149
+          },
+          "driftPct": 19.74
+        },
+        "error-413": {
+          "sizeMb": 1,
+          "chunkKb": 1024,
+          "rateMb": 0,
+          "multipart": true,
+          "expectedStatus": 413,
+          "requests": 3,
+          "repeat": 1,
+          "reps": 3,
+          "statuses": {
+            "413": 3
+          },
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuUs": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0,
+              "mean": 0
+            },
+            "intervalUs": 0,
+            "upperBoundUs": 0,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": null,
+            "cpuPerChunkUpperUs": null
+          },
+          "processCpuUsPerRequest": null,
+          "bytes": {
+            "sent": 1000176,
+            "received": 1000176,
+            "shaMatch": true
+          },
+          "timingMs": {
+            "firstByte": 3,
+            "lastByte": 5,
+            "uploadSpan": 0,
+            "sinkSpan": 2,
+            "maxGap": 0.296,
+            "wallP50": 0
+          },
+          "driftPct": 99.18
+        },
+        "error-500": {
+          "sizeMb": 1,
+          "chunkKb": 1024,
+          "rateMb": 0,
+          "multipart": true,
+          "expectedStatus": 500,
+          "requests": 3,
+          "repeat": 1,
+          "reps": 3,
+          "statuses": {
+            "500": 3
+          },
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuUs": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0,
+              "mean": 0
+            },
+            "intervalUs": 0,
+            "upperBoundUs": 0,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": null,
+            "cpuPerChunkUpperUs": null
+          },
+          "processCpuUsPerRequest": null,
+          "bytes": {
+            "sent": 1000176,
+            "received": 1000176,
+            "shaMatch": true
+          },
+          "timingMs": {
+            "firstByte": 2,
+            "lastByte": 9,
+            "uploadSpan": 0,
+            "sinkSpan": 7,
+            "maxGap": 5.226,
+            "wallP50": 0
+          },
+          "driftPct": 99.18
+        },
+        "throttled-20mb": {
+          "sizeMb": 20,
+          "chunkKb": 1024,
+          "rateMb": 2,
+          "multipart": true,
+          "expectedStatus": 200,
+          "requests": 3,
+          "repeat": 1,
+          "reps": 3,
+          "statuses": {
+            "200": 3
+          },
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuUs": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0,
+              "mean": 0
+            },
+            "intervalUs": 0,
+            "upperBoundUs": 0,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": null,
+            "cpuPerChunkUpperUs": null
+          },
+          "processCpuUsPerRequest": null,
+          "bytes": {
+            "sent": 20000176,
+            "received": 20000176,
+            "shaMatch": true
+          },
+          "timingMs": {
+            "firstByte": 523,
+            "lastByte": 1,
+            "uploadSpan": 9977,
+            "sinkSpan": 9455,
+            "maxGap": 530.759,
+            "wallP50": 0
+          },
+          "driftPct": 5.24
+        },
+        "client-abort": {
+          "sizeMb": 20,
+          "chunkKb": 1024,
+          "rateMb": 2,
+          "multipart": true,
+          "expectedStatus": 200,
+          "requests": 1,
+          "repeat": 1,
+          "reps": 1,
+          "statuses": {},
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuUs": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0,
+              "mean": 0
+            },
+            "intervalUs": 0,
+            "upperBoundUs": 0,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": null,
+            "cpuPerChunkUpperUs": null
+          },
+          "processCpuUsPerRequest": null,
+          "bytes": {
+            "sent": 3145862,
+            "received": 3145862,
+            "shaMatch": false
+          },
+          "timingMs": {
+            "firstByte": -1,
+            "lastByte": -1,
+            "uploadSpan": 1056,
+            "sinkSpan": 0,
+            "maxGap": 0,
+            "wallP50": 0
+          },
+          "driftPct": 100
+        },
+        "scale-5.4mb": {
+          "sizeMb": 5.4,
+          "chunkKb": 1024,
+          "rateMb": 0,
+          "multipart": true,
+          "expectedStatus": 200,
+          "requests": 60,
+          "repeat": 20,
+          "reps": 3,
+          "statuses": {
+            "200": 60
+          },
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 0,
+              "p95": 1,
+              "max": 1
+            },
+            "cpuUs": {
+              "p50": 0,
+              "p95": 583.026,
+              "max": 583.026,
+              "mean": 165.191
+            },
+            "intervalUs": 583.026,
+            "upperBoundUs": 583.026,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": 107.968,
+            "cpuPerChunkUpperUs": 97.171
+          },
+          "processCpuUsPerRequest": 52865,
+          "bytes": {
+            "sent": 5400176,
+            "received": 5400176,
+            "shaMatch": true
+          },
+          "timingMs": {
+            "firstByte": 10,
+            "lastByte": 27,
+            "uploadSpan": 6,
+            "sinkSpan": 23,
+            "maxGap": 1.323,
+            "wallP50": 52.3
+          },
+          "driftPct": 29.41
+        },
+        "scale-11.9mb": {
+          "sizeMb": 11.9,
+          "chunkKb": 1024,
+          "rateMb": 0,
+          "multipart": true,
+          "expectedStatus": 200,
+          "requests": 60,
+          "repeat": 20,
+          "reps": 3,
+          "statuses": {
+            "200": 60
+          },
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 0,
+              "p95": 1,
+              "max": 2
+            },
+            "cpuUs": {
+              "p50": 0,
+              "p95": 583.026,
+              "max": 1166.052,
+              "mean": 174.908
+            },
+            "intervalUs": 583.026,
+            "upperBoundUs": 1166.052,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": 48.994,
+            "cpuPerChunkUpperUs": 48.585
+          },
+          "processCpuUsPerRequest": 77083,
+          "bytes": {
+            "sent": 11900176,
+            "received": 11900176,
+            "shaMatch": true
+          },
+          "timingMs": {
+            "firstByte": 13,
+            "lastByte": 72,
+            "uploadSpan": 10,
+            "sinkSpan": 69,
+            "maxGap": 9.824,
+            "wallP50": 87.7
+          },
+          "driftPct": 11.07
+        }
+      },
+      "memory": [
+        {
+          "sizeMb": 20,
+          "rateMb": 2,
+          "method": {
+            "cdpMethod": "Runtime.getHeapUsage",
+            "sampleIntervalMs": 50,
+            "settleMs": 500,
+            "crossCheck": "Performance.getMetrics no soportado en workerd 2026-10-23"
+          },
+          "samples": 158,
+          "usedSize": {
+            "baseline": 3643012,
+            "peak": 3648636,
+            "after": 3648636,
+            "peakDelta": 5624,
+            "afterDelta": 5624,
+            "totalSize": 5730304
+          },
+          "upload": {
+            "status": 200,
+            "sentBytes": 20000176,
+            "wallMs": 10013
+          },
+          "rss": {
+            "beforeBytes": 551378944,
+            "afterBytes": 566439936,
+            "deltaBytes": 15060992,
+            "peakBeforeBytes": 714985472,
+            "peakAfterBytes": 725835776,
+            "processCount": 7
+          },
+          "notes": [
+            "Performance.enable no soportado en este workerd",
+            "Performance.getMetrics no devolvió métricas"
+          ]
+        },
+        {
+          "sizeMb": 50,
+          "rateMb": 5,
+          "method": {
+            "cdpMethod": "Runtime.getHeapUsage",
+            "sampleIntervalMs": 50,
+            "settleMs": 500,
+            "crossCheck": "Performance.getMetrics no soportado en workerd 2026-10-23"
+          },
+          "samples": 159,
+          "usedSize": {
+            "baseline": 3648636,
+            "peak": 3654260,
+            "after": 3654260,
+            "peakDelta": 5624,
+            "afterDelta": 5624,
+            "totalSize": 5730304
+          },
+          "upload": {
+            "status": 200,
+            "sentBytes": 50000176,
+            "wallMs": 10056
+          },
+          "rss": {
+            "beforeBytes": 566439936,
+            "afterBytes": 582799360,
+            "deltaBytes": 16359424,
+            "peakBeforeBytes": 725835776,
+            "peakAfterBytes": 740458496,
+            "processCount": 7
+          },
+          "notes": [
+            "Performance.enable no soportado en este workerd",
+            "Performance.getMetrics no devolvió métricas"
+          ]
+        }
+      ]
+    },
+    "elysia-schema": {
+      "configs": {
+        "headline-20mb": {
+          "sizeMb": 20,
+          "chunkKb": 1024,
+          "rateMb": 0,
+          "multipart": true,
+          "expectedStatus": 200,
+          "requests": 60,
+          "repeat": 20,
+          "reps": 3,
+          "statuses": {
+            "500": 60
+          },
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 10,
+              "p95": 11.05,
+              "max": 30
+            },
+            "cpuUs": {
+              "p50": 5869.942,
+              "p95": 6486.286,
+              "max": 17609.826,
+              "mean": 5762.326
+            },
+            "intervalUs": 586.994,
+            "upperBoundUs": 17609.82,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": null,
+            "cpuPerChunkUpperUs": null
+          },
+          "processCpuUsPerRequest": 119531,
+          "bytes": {
+            "sent": 20000176,
+            "received": 0,
+            "shaMatch": false
+          },
+          "timingMs": {
+            "firstByte": -1,
+            "lastByte": -1,
+            "uploadSpan": 15,
+            "sinkSpan": 0,
+            "maxGap": 0,
+            "wallP50": 87.4
+          },
+          "driftPct": 100
+        },
+        "octet-20mb": {
+          "sizeMb": 20,
+          "chunkKb": 1024,
+          "rateMb": 0,
+          "multipart": false,
+          "expectedStatus": 200,
+          "requests": 60,
+          "repeat": 20,
+          "reps": 3,
+          "statuses": {
+            "500": 60
+          },
+          "cpu": {
+            "nonIdleSamples": {
+              "p50": 8,
+              "p95": 9,
+              "max": 13
+            },
+            "cpuUs": {
+              "p50": 4695.953,
+              "p95": 5282.948,
+              "max": 7630.924,
+              "mean": 4754.653
+            },
+            "intervalUs": 586.994,
+            "upperBoundUs": 7630.922,
+            "noiseSamples": {
+              "p50": 0,
+              "p95": 0,
+              "max": 0
+            },
+            "cpuPerMbUpperUs": null,
+            "cpuPerChunkUpperUs": null
+          },
+          "processCpuUsPerRequest": 119531,
+          "bytes": {
+            "sent": 20000000,
+            "received": 0,
+            "shaMatch": false
+          },
+          "timingMs": {
+            "firstByte": -1,
+            "lastByte": -1,
+            "uploadSpan": 14,
+            "sinkSpan": 0,
+            "maxGap": 0,
+            "wallP50": 86.7
+          },
+          "driftPct": 100
+        }
+      },
+      "memory": []
+    }
+  }
+}

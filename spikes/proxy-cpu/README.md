@@ -50,11 +50,19 @@ scripts/
   upload.ts           cliente chunked con throttle, hash incremental y abort
   measure-cpu.ts      cliente CDP + calibración + estadísticas
   bench.ts            orquestador de la matriz
+  summarize.ts        deriva results/bench-summary.json (versionado)
   sink-node.cjs       upstream Node para probar la propagación del abort
 wrangler.jsonc              minimal  :8807 / inspector 9240
 wrangler.elysia.jsonc       elysia   :8810 / inspector 9241
 wrangler.elysia-schema.jsonc schema  :8812 / inspector 9242
+results/
+  bench-summary.json        métricas agregadas versionadas (lo cita RESULT.md)
 ```
+
+`results/bench.json` y los logs están gitignored: contienen traces por chunk, muestras
+de heap y frames. `results/bench-summary.json` se deriva de ahí con
+`bun scripts/summarize.ts` (o `bun run summary`) y `bench.ts` lo regenera al final de
+cada corrida.
 
 ## Comandos
 
@@ -66,6 +74,7 @@ bun run dev:elysia-schema    # schema :8812
 bun run upload -- --url http://127.0.0.1:8807/proxy --size 20 --chunk 1024 --rate 2 --multipart
 bun run measure -- --inspector 9240 --url http://127.0.0.1:8807/proxy --size 20 --chunk 1024 --multipart --repeat 20
 bun run bench [-- --only minimal] [--configs headline-20mb,throttled-20mb] [--quick]
+bun run summary              # regenera results/bench-summary.json desde bench.json
 ```
 
 Los puertos son dedicados porque los dev servers de `apps/web` ocupan `8787`.
