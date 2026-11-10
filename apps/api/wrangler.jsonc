@@ -3,5 +3,16 @@
   "name": "opencut-api",
   "main": "src/index.ts",
   // Minimum date required for CloudflareAdapter AoT support
-  "compatibility_date": "2025-06-01"
+  "compatibility_date": "2025-06-01",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "opencut-quota",
+      // Sustituir por el UUID real: `wrangler d1 create opencut-quota`
+      "database_id": "00000000-0000-0000-0000-000000000000"
+    }
+  ],
+  "vars": {
+    "QUOTA_DAILY_LIMIT": "20"
+  }
 }
