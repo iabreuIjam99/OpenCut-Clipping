@@ -6,7 +6,7 @@ import tailwindcss from "@tailwindcss/vite"
 import { devtools } from "@tanstack/devtools-vite"
 import { tanstackStart } from "@tanstack/react-start/plugin/vite"
 import viteReact from "@vitejs/plugin-react"
-import { defineConfig } from "vite"
+import { defineConfig, type Plugin } from "vite"
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -84,9 +84,36 @@ function copyOrtAssets(): void {
 copyFfmpegAssets()
 copyOrtAssets()
 
+/**
+ * En el navegador, `node:async_hooks` está externalizado. TanStack Start
+ * arrastra `start-storage-context` al grafo del cliente y hace
+ * `new AsyncLocalStorage()` en el ámbito del módulo, lo que rompe la app antes
+ * de hidratar. Este alias sustituye el builtin por un stub inocuo **solo** en
+ * el entorno cliente: el servidor (Workers, con `nodejs_compat`) conserva la
+ * implementación real que usa el contexto de request.
+ */
+function clientAsyncHooksShim(): Plugin {
+  const shim = resolve(here, "src/async-hooks-browser.ts")
+  return {
+    name: "client-async-hooks-shim",
+    // Solo el grafo del navegador: el servidor conserva el builtin real.
+    applyToEnvironment: (environment) => environment.name === "client",
+    enforce: "pre",
+    resolveId(source, importer) {
+      if (source !== "node:async_hooks") return null
+      // Blast radius mínimo: solo el módulo de TanStack que hace la
+      // instanciación en ámbito de módulo. Cualquier otra fuga de código de
+      // servidor al cliente sigue fallando de forma ruidosa.
+      if (!importer?.includes("@tanstack/start-storage-context")) return null
+      return shim
+    },
+  }
+}
+
 const config = defineConfig({
   resolve: { tsconfigPaths: true },
   plugins: [
+    clientAsyncHooksShim(),
     devtools(),
     cloudflare({ viteEnvironment: { name: "ssr" } }),
     tailwindcss(),

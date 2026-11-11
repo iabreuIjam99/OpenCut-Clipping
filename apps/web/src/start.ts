@@ -1,4 +1,4 @@
-import { createMiddleware, createStart } from "@tanstack/start-client-core"
+import { createMiddleware, createStart } from "@tanstack/react-start"
 import {
   buildContentSecurityPolicy,
   generateNonce,
