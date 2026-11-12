@@ -134,7 +134,7 @@ Valores exactos:
 | Solapes | Prohibidos |
 | Orden | Ascendente por `start` |
 | Máximo de cortes | 20 |
-| Ajuste a frontera de segmento | ±500 ms (los segmentos de Whisper caen en pausas; word-level diferido) |
+| Ajuste a frontera de segmento | ±750 ms (SNAP_MS; los timestamps de Whisper son a nivel de segmento, R11; 750 ms cubre la pausa real sin invadir el segmento vecino) |
 | Duplicados | IoU > 0,8 → descartar |
 | Título | ≤ 80 caracteres, sin caracteres de control ni HTML |
 
