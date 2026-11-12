@@ -4,6 +4,8 @@
   "main": "src/index.ts",
   // Minimum date required for CloudflareAdapter AoT support
   "compatibility_date": "2025-06-01",
+  // Workers AI: analisis de cortes (Task 17). Incluido en el plan Free.
+  "ai": { "binding": "AI" },
   "d1_databases": [
     {
       "binding": "DB",

@@ -117,10 +117,21 @@ Solo aplica al modo nube. Se corta en segmentos de **30 min** (~5,4 MB a 24 kbps
 
 ### 4.5 Análisis de cortes
 
-1. **Heurísticas locales** (`score-segments.ts`): puntúa ventanas de 15-180 s por densidad de preguntas, cifras, palabras clave del brief, cambios de energía y silencios. Determinista y testeable.
-2. **LLM opcional** (Workers AI `@cf/openai/gpt-oss-20b`, o BYOK de Groq/OpenCode): recibe el transcript delimitado y devuelve JSON. Una sola llamada por ventana de 30 min para no superar cuotas.
+1. **Validador local** (`cut-validator.ts`): valida y normaliza cortes provenientes de cualquier fuente no confiable (LLM o heurísticas).
+   - Duración mínima 15 000 ms, máxima 180 000 ms.
+   - Rango: `0 ≤ start < end ≤ duración del medio`.
+   - Solapes prohibidos; orden ascendente por `start`.
+   - Máximo 20 cortes; duplicados con IoU > 0,8 se colapsan conservando el mayor score.
+   - Título ≤ 80 code points, sin caracteres de control ni HTML.
+   - **No aplica snapping de frontera de segmento** (±750 ms): el ajuste a fronteras lo hace el cliente en Task 19 con `snapToBoundaries`.
 
-El LLM **no** ejecuta herramientas, no elige URLs y no escribe en disco.
+2. **LLM opcional** (Workers AI `@cf/openai/gpt-oss-20b`, o BYOK de Groq/OpenCode): recibe el transcript delimitado y devuelve JSON.
+   - Una sola llamada por ventana de 30 min para no superar cuotas.
+   - **Fallback cliente-first**: si el LLM falla (throw, timeout, basura, 0 cortes válidos) → el servidor devuelve `200 { cuts: [] }`.
+     El cliente conserva `scoreWindows` y usa sus propios cortes cuando la respuesta viene vacía.
+   - El LLM no ejecuta herramientas, no elige URLs y no escribe en disco.
+
+La cadena de degradación es: LLM → validador local → corte por defecto vacío. Nunca heurísticas en el servidor.
 
 ### 4.6 Validador de cortes (`cut-validator.ts`)
 
